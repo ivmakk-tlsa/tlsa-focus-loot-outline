@@ -106,10 +106,10 @@ public class Plugin : BasePlugin
         Enabled = Config.Bind("General", "Enabled", true, "Master switch for the focus highlight.");
         Verbose = Config.Bind("General", "Verbose", false, "Verbose diagnostic logging: container registration and outline attachment. Turn on to diagnose a container that does not highlight.");
 
-        Red = Config.Bind("Color", "Red", 1f, "Outline red channel. 0..1, clamped.");
-        Green = Config.Bind("Color", "Green", 0.85f, "Outline green channel. 0..1, clamped.");
-        Blue = Config.Bind("Color", "Blue", 0.1f, "Outline blue channel. 0..1, clamped.");
-        Alpha = Config.Bind("Color", "Alpha", 1f, "Outline alpha. 0..1, clamped.");
+        Red = Config.Bind("Color", "Red", 1f, new ConfigDescription("Outline red channel.", new AcceptableValueRange<float>(0f, 1f)));
+        Green = Config.Bind("Color", "Green", 0.85f, new ConfigDescription("Outline green channel.", new AcceptableValueRange<float>(0f, 1f)));
+        Blue = Config.Bind("Color", "Blue", 0.1f, new ConfigDescription("Outline blue channel.", new AcceptableValueRange<float>(0f, 1f)));
+        Alpha = Config.Bind("Color", "Alpha", 1f, new ConfigDescription("Outline alpha.", new AcceptableValueRange<float>(0f, 1f)));
         Strength = Config.Bind("Color", "Strength", 1f, "Outline fresnel strength.");
 
         DepthTest = Config.Bind("Visibility", "DepthTest", false, "false draws the outline over walls (x-ray); true lets walls occlude it.");
@@ -121,7 +121,7 @@ public class Plugin : BasePlugin
         IncludePickups = Config.Bind("Filter", "IncludePickups", true, "Highlight loose loot and pickups (ground items, survivor drops, tool rewards).");
         IncludeStations = Config.Bind("Filter", "IncludeStations", true, "Highlight crafting and utility stations (workbench, merchant, supply store, upgrades, shrine).");
         IncludeObjectives = Config.Bind("Filter", "IncludeObjectives", true, "Highlight objectives and misc (power generator, books, XP interactions).");
-        AttachPerFrame = Config.Bind("Performance", "AttachPerFrame", 4, "How many containers attach outlines per frame after focus starts. Lower is smoother but takes longer to fully light.");
+        AttachPerFrame = Config.Bind("Performance", "AttachPerFrame", 4, new ConfigDescription("How many containers attach outlines per frame after focus starts. Lower is smoother but takes longer to fully light.", new AcceptableValueRange<int>(1, 32)));
 
         new Harmony(PluginGuid).PatchAll();
 
@@ -166,7 +166,7 @@ public class Plugin : BasePlugin
             Category = ScriptableObject.CreateInstance<OutlineCategory>();
             Category.m_Active = new OutlineCategory.State();
             Category.m_Inactive = new OutlineCategory.State();
-            if (Verbose.Value) Log.LogInfo("[cat] created shared OutlineCategory.");
+            if (Verbose.Value) Log.LogDebug("[cat] created shared OutlineCategory.");
         }
 
         var active = Category.m_Active;
@@ -238,7 +238,7 @@ public class Plugin : BasePlugin
         // They are false positives, so leave them unlit.
         if (IsExcludedProp(root.name))
         {
-            if (Verbose.Value) Log.LogInfo($"[skip-prop] '{go.name}' root '{root.name}' is excluded.");
+            if (Verbose.Value) Log.LogDebug($"[skip-prop] '{go.name}' root '{root.name}' is excluded.");
             return;
         }
 
@@ -270,7 +270,7 @@ public class Plugin : BasePlugin
             var mr = r.TryCast<MeshRenderer>();
             if (smr == null && mr == null)
             {
-                if (Verbose.Value) Log.LogInfo($"[attach] skip non-mesh renderer '{r.gameObject.name}' ({r.GetType().Name}).");
+                if (Verbose.Value) Log.LogDebug($"[attach] skip non-mesh renderer '{r.gameObject.name}' ({r.GetType().Name}).");
                 continue;
             }
 
@@ -279,7 +279,7 @@ public class Plugin : BasePlugin
             {
                 Vector3 bs, bc; try { var b = r.bounds; bs = b.size; bc = b.center; } catch { bs = Vector3.zero; bc = Vector3.zero; }
                 Vector3 gp = go.transform.position;
-                Log.LogInfo($"[mesh] '{go.name}' kind={t.Kind} '{r.gameObject.name}' type={(smr != null ? "skinned" : "mesh")} size=({bs.x:F2}/{bs.y:F2}/{bs.z:F2}) center=({bc.x:F1}/{bc.y:F1}/{bc.z:F1}) gpos=({gp.x:F1}/{gp.y:F1}/{gp.z:F1}) flat={IsBigFlatPlane(r)} enabled={r.enabled} active={r.gameObject.activeInHierarchy}.");
+                Log.LogDebug($"[mesh] '{go.name}' kind={t.Kind} '{r.gameObject.name}' type={(smr != null ? "skinned" : "mesh")} size=({bs.x:F2}/{bs.y:F2}/{bs.z:F2}) center=({bc.x:F1}/{bc.y:F1}/{bc.z:F1}) gpos=({gp.x:F1}/{gp.y:F1}/{gp.z:F1}) flat={IsBigFlatPlane(r)} enabled={r.enabled} active={r.gameObject.activeInHierarchy}.");
             }
 
             // Skip a big flat plane (a ground quad, a decal, a parachute sheet). Some containers
@@ -287,7 +287,7 @@ public class Plugin : BasePlugin
             // mesh is never both this thin in one axis and this wide in another.
             if (IsBigFlatPlane(r))
             {
-                if (Verbose.Value) Log.LogInfo($"[skip-flat] '{go.name}' mesh '{r.gameObject.name}'.");
+                if (Verbose.Value) Log.LogDebug($"[skip-flat] '{go.name}' mesh '{r.gameObject.name}'.");
                 continue;
             }
 
@@ -319,7 +319,7 @@ public class Plugin : BasePlugin
         }
 
         if (Verbose.Value)
-            Log.LogInfo($"[attach] '{go.name}' kind={t.Kind}: {made} outline(s) from {renderers.Length} renderer(s) under '{root.name}'.");
+            Log.LogDebug($"[attach] '{go.name}' kind={t.Kind}: {made} outline(s) from {renderers.Length} renderer(s) under '{root.name}'.");
     }
 
     // A big flat plane has one near-zero axis and one wide axis. A ground quad or a parachute sheet
@@ -370,12 +370,12 @@ public class Plugin : BasePlugin
             {
                 var objRoot = interactable.ObjectRoot.gameObject;
                 int c = objRoot.GetComponentsInChildren<Renderer>(true).Length;
-                if (Verbose.Value) Log.LogInfo($"[root] '{go.name}': Interactable.ObjectRoot='{objRoot.name}' renderers={c}.");
+                if (Verbose.Value) Log.LogDebug($"[root] '{go.name}': Interactable.ObjectRoot='{objRoot.name}' renderers={c}.");
                 if (c > 0) return objRoot;
             }
             else if (Verbose.Value)
             {
-                Log.LogInfo($"[root] '{go.name}': interactable={interactable != null} objectRoot=null.");
+                Log.LogDebug($"[root] '{go.name}': interactable={interactable != null} objectRoot=null.");
             }
 
             // ObjectRoot held no mesh. Climb parents and take the lowest ancestor whose subtree has
@@ -388,10 +388,10 @@ public class Plugin : BasePlugin
                 if (pc <= 0) continue;
                 if (pc > MaxAncestorRenderers)
                 {
-                    if (Verbose.Value) Log.LogInfo($"[root] '{go.name}': ancestor '{pgo.name}' has {pc} renderers (> {MaxAncestorRenderers}), too broad; leaving unlit.");
+                    if (Verbose.Value) Log.LogDebug($"[root] '{go.name}': ancestor '{pgo.name}' has {pc} renderers (> {MaxAncestorRenderers}), too broad; leaving unlit.");
                     break;
                 }
-                if (Verbose.Value) Log.LogInfo($"[root] '{go.name}': using ancestor '{pgo.name}' (depth {depth}) renderers={pc}.");
+                if (Verbose.Value) Log.LogDebug($"[root] '{go.name}': using ancestor '{pgo.name}' (depth {depth}) renderers={pc}.");
                 return pgo;
             }
         }
@@ -425,7 +425,7 @@ public class Plugin : BasePlugin
             parts = string.Join(", ", names);
         }
         catch (Exception e) { parts = $"<components unavailable: {e.Message}>"; }
-        Log.LogInfo($"[unclassified] '{name}' components: {parts}.");
+        Log.LogDebug($"[unclassified] '{name}' components: {parts}.");
     }
 
     // Wire a corpse to the game's own OutlineController when its dead ZombieActor still has one with
@@ -442,7 +442,7 @@ public class Plugin : BasePlugin
             var oc = view != null ? view.OutlineController : null;
             if (oc == null)
             {
-                if (Verbose.Value) Log.LogInfo($"[corpse] '{go.name}' has ZombieActor but no OutlineController; using manual outlines.");
+                if (Verbose.Value) Log.LogDebug($"[corpse] '{go.name}' has ZombieActor but no OutlineController; using manual outlines.");
                 return false;
             }
 
@@ -451,14 +451,21 @@ public class Plugin : BasePlugin
             int ocr = oc.m_OutlineRenderers != null ? oc.m_OutlineRenderers.Count : 0;
             if (ocr <= 0)
             {
-                if (Verbose.Value) Log.LogInfo($"[corpse] '{go.name}' controller has 0 renderers; using manual outlines.");
+                if (Verbose.Value) Log.LogDebug($"[corpse] '{go.name}' controller has 0 renderers; using manual outlines.");
                 return false;
             }
+
+            // Point the corpse controller at the mod's shared category so the body glows in the
+            // mod color, matching the containers. The controller is this dead actor's own, so this
+            // does not recolor live zombies (each has its own controller). Without this the corpse
+            // keeps the game's default outline color (the red aim/zombie outline).
+            try { oc.SetOutlinesCategory(Category); }
+            catch (Exception e) { if (Verbose.Value) Log.LogWarning($"[corpse] SetOutlinesCategory failed on '{go.name}': {e.Message}"); }
 
             oc.SetOutlinesActive(false);
             t.Controller = oc;
             t.UsesController = true;
-            if (Verbose.Value) Log.LogInfo($"[corpse] '{go.name}' uses game OutlineController with {ocr} renderers.");
+            if (Verbose.Value) Log.LogDebug($"[corpse] '{go.name}' uses game OutlineController with {ocr} renderers.");
             return true;
         }
         catch (Exception e)
@@ -508,7 +515,7 @@ public class Plugin : BasePlugin
             {
                 if (pair.Value.Lit) SetGlow(pair.Value, false);
             }
-            if (Verbose.Value) Log.LogInfo($"[focus] EXIT: registry={Registry.Count}.");
+            if (Verbose.Value) Log.LogDebug($"[focus] EXIT: registry={Registry.Count}.");
             return;
         }
 
@@ -534,7 +541,7 @@ public class Plugin : BasePlugin
         for (int i = 0; i < dead.Count; i++) Registry.Remove(dead[i]);
 
         if (Verbose.Value)
-            Log.LogInfo($"[focus] ENTER: registry={Registry.Count} litNow={litNow} queued={queued}.");
+            Log.LogDebug($"[focus] ENTER: registry={Registry.Count} litNow={litNow} queued={queued}.");
     }
 
     // Attach outlines for a few queued containers per frame, then light them. Called by the ticker.
@@ -568,7 +575,7 @@ public static class LootAwakePatch
         if (Plugin.Verbose.Value)
         {
             var p = __instance.transform.position;
-            Plugin.Log.LogInfo($"[reg] LootContainer '{__instance.gameObject.name}' at ({p.x:F1},{p.y:F1},{p.z:F1}) searched={__instance.IsSearched} depleted={__instance.IsDepleted}.");
+            Plugin.Log.LogDebug($"[reg] LootContainer '{__instance.gameObject.name}' at ({p.x:F1},{p.y:F1},{p.z:F1}) searched={__instance.IsSearched} depleted={__instance.IsDepleted}.");
         }
         if (Plugin.FocusActive) Plugin.HighlightAll(true);
     }
@@ -582,7 +589,7 @@ public static class StashAwakePatch
     {
         Plugin.Registry[__instance.Pointer] = new Plugin.Tracked { Kind = Plugin.Kind.Stash, Stash = __instance, GameObject = __instance.gameObject };
         if (Plugin.Verbose.Value)
-            Plugin.Log.LogInfo($"[reg] StashContainer '{__instance.gameObject.name}'.");
+            Plugin.Log.LogDebug($"[reg] StashContainer '{__instance.gameObject.name}'.");
         if (Plugin.FocusActive) Plugin.HighlightAll(true);
     }
 }
@@ -595,7 +602,7 @@ public static class CacheAwakePatch
     {
         Plugin.Registry[__instance.Pointer] = new Plugin.Tracked { Kind = Plugin.Kind.Cache, Cache = __instance, GameObject = __instance.gameObject };
         if (Plugin.Verbose.Value)
-            Plugin.Log.LogInfo($"[reg] CacheContainer '{__instance.gameObject.name}' searchCount={__instance.SearchCount}.");
+            Plugin.Log.LogDebug($"[reg] CacheContainer '{__instance.gameObject.name}' searchCount={__instance.SearchCount}.");
         if (Plugin.FocusActive) Plugin.HighlightAll(true);
     }
 }
@@ -636,7 +643,7 @@ public static class InteractableAwakePatch
         if (Plugin.Verbose.Value)
         {
             string extra = layers.Count > 1 ? $" layers=[{string.Join(", ", layers)}]" : "";
-            Plugin.Log.LogInfo($"[reg] {kind} interactable '{go.name}'.{extra}");
+            Plugin.Log.LogDebug($"[reg] {kind} interactable '{go.name}'.{extra}");
         }
         if (Plugin.FocusActive) Plugin.HighlightAll(true);
     }
@@ -678,7 +685,7 @@ public static class FocusStartPatch
     [HarmonyPostfix]
     public static void Postfix(FocusController __instance)
     {
-        if (Plugin.Verbose.Value) Plugin.Log.LogInfo($"[focus] StartFocus fired (IsFocusActive={__instance.IsFocusActive}).");
+        if (Plugin.Verbose.Value) Plugin.Log.LogDebug($"[focus] StartFocus fired (IsFocusActive={__instance.IsFocusActive}).");
         Plugin.HighlightAll(true);
     }
 }
@@ -689,7 +696,7 @@ public static class FocusEndPatch
     [HarmonyPostfix]
     public static void Postfix()
     {
-        if (Plugin.Verbose.Value) Plugin.Log.LogInfo("[focus] EndFocus fired.");
+        if (Plugin.Verbose.Value) Plugin.Log.LogDebug("[focus] EndFocus fired.");
         Plugin.HighlightAll(false);
     }
 }

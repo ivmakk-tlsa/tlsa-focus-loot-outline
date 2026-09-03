@@ -4,11 +4,11 @@ All notable changes to this mod are documented here. The format follows [Keep a 
 
 ## [Unreleased]
 
-## [1.0.0] - 2026-09-03
+## [1.0.0] - 2026-09-04
 
 ### Added
 
-- Outlines searchable containers and lootable interactables while focus mode is active: loot containers, sector stashes, supply caches, gated containers, pickups, crafting and utility stations, and objectives.
+- Outlines searchable containers and other lootable objects while focus mode is active: loot containers, corpses, sector stashes, supply caches, gated containers, pickups, crafting and utility stations, and objectives.
 - Configurable outline color, glow strength, and x-ray depth test.
 - Unsearched-only filter, and a per-kind toggle for each highlight group.
 - Config re-reads on the next focus press, so edits apply without a restart.

@@ -21,5 +21,5 @@ Tracks the mod's Nexus page details. Fill the id and URL after the page is creat
 
 - Short description: `short-description.txt` (the draft-dialog field, 350-char limit; kept to one line).
 - Full description: `description.bbcode` (paste into the editor's raw BBCode mode).
-- Background: `images/banner.jpg` (1300x372). Set as the mod page background. TBD, captured in phase 5.
-- Gallery images: 1920x1080 focus-mode captures with several container types outlined. TBD, captured in phase 5. Pick one as the mods-grid thumbnail.
+- Background: `images/banner.jpg` (1300x372). Set as the mod page background.
+- Gallery images (1920x1080): `images/01-tlsa_flo_thumb.jpg` (hero, pick as the mods-grid thumbnail), `images/02-tlsa_flo_compare1.jpg` and `images/03-tlsa_flo_compare2.jpg` (labeled before/after), `images/04-tlsa_flo_focus2.jpg` (a second mod-on focus scene).
