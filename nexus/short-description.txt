@@ -1,0 +1,1 @@
+Never walk past a stash again. Enter focus and every searchable container, cache, and pickup lights up with an outline. Requires BepInEx 6 (IL2CPP).

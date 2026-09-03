@@ -1,0 +1,38 @@
+[size=5]Description[/size]
+Focus Loot Outline highlights searchable containers and lootable interactables while focus mode is active, so you spot them faster and never walk past loot. The moment you enter focus, loot boxes, sector stashes, supply caches, gated containers, pickups, crafting and utility stations, and objectives light up with a colored outline. They go dark when you leave focus.
+
+It uses the game's own outline pipeline, the same one that outlines zombies, so the highlight looks native. Highlighting is event-driven, with no per-frame work.
+
+[size=5]Main features[/size]
+[list]
+[*]Outlines every searchable container and lootable interactable in focus mode.
+[*]Covers loot, stashes, caches, gated containers, pickups, stations, and objectives.
+[*]Uses the game's native outline, so it matches the zombie highlight.
+[*]Configurable color, glow strength, and x-ray (draw through walls, or let walls occlude).
+[*]Unsearched-only filter, plus a per-kind toggle for each highlight group.
+[*]Color and filter edits apply on the next focus press, no restart needed.
+[/list]
+
+[size=5]Requirements[/size]
+[list]
+[*][url=https://www.nexusmods.com/thelaststandaftermath/mods/1]BepInEx for The Last Stand: Aftermath[/url]. Install it first.
+[/list]
+
+[size=5]Installation[/size]
+[list=1]
+[*]Install [url=https://www.nexusmods.com/thelaststandaftermath/mods/1]BepInEx[/url] [i](if no other mods were installed before, start the game once so BepInEx finishes setup, then quit)[/i].
+[*]Extract this mod's zip into the game folder (the folder with the game .exe). The DLL lands in BepInEx\plugins. Full path examples:
+[list]
+[*]Steam: [code]C:\Program Files (x86)\Steam\steamapps\common\The Last Stand Aftermath\BepInEx\plugins\FocusLootOutline.dll[/code]
+[*]Epic: [code]C:\Program Files\Epic Games\The Last Stand Aftermath\BepInEx\plugins\FocusLootOutline.dll[/code]
+[/list]
+[*]Start the game. Enter focus mode near loot and containers now outline.
+[/list]
+
+Not working? Open BepInEx\LogOutput.log and look for the Focus Loot Outline loaded line.
+
+[size=5]Uninstall[/size]
+Delete FocusLootOutline.dll from the BepInEx\plugins folder.
+
+[size=5]Source and license[/size]
+Open source under GPL-3.0: [url=https://github.com/ivmakk-tlsa/tlsa-focus-loot-outline]github.com/ivmakk-tlsa/tlsa-focus-loot-outline[/url]
