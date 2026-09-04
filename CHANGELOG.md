@@ -4,6 +4,12 @@ All notable changes to this mod are documented here. The format follows [Keep a 
 
 ## [Unreleased]
 
+### Fixed
+
+- Supply caches no longer draw stray spikes from the beacon cables or a duplicate shadow outline.
+- The ground shadow decal under a survivor drop no longer outlines as a bright square.
+- Decorative ivy and bushes around caches, survivor drops, and the antidote dispenser are no longer outlined, while harvestable plants still are.
+
 ## [1.0.0] - 2026-09-04
 
 ### Added

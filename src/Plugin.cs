@@ -291,6 +291,17 @@ public class Plugin : BasePlugin
                 continue;
             }
 
+            // Skip junk sub-meshes that outline as garbage: a procedural "Wire Span Mesh" cable
+            // reports near-zero bounds, so the shader draws it as spikes radiating from a point
+            // (seen on the HERC supply cache beacon); a "ShadowCaster" is a shadow-only proxy that
+            // just duplicates the real silhouette; and decorative foliage (ivy/bush) baked into a
+            // container root outlines as a jagged cluster. See ExcludedMeshes.
+            if (IsExcludedMesh(r.gameObject.name))
+            {
+                if (Verbose.Value) Log.LogDebug($"[skip-mesh] '{go.name}' mesh '{r.gameObject.name}' is excluded.");
+                continue;
+            }
+
             try
             {
                 var existing = r.gameObject.GetComponent<OutlineRenderer>();
@@ -327,6 +338,15 @@ public class Plugin : BasePlugin
     private const float FlatPlaneMinThickness = 0.3f;
     private const float FlatPlaneMinSpan = 4f;
 
+    // A zero-bounds mesh (a merged/degenerate renderer) has no real silhouette and draws as garbage.
+    private const float FlatDegenerateMax = 0.02f;
+
+    // A ground decal/quad is paper-thin AND wide. The width bound is what tells it from a small flat
+    // tool (a wrench, a plate, a lid), which is thin but only a few dozen cm across, so a tool keeps
+    // its outline while a survivor-drop ground quad (about 3.3 m) is dropped.
+    private const float FlatDecalThickness = 0.05f;
+    private const float FlatDecalSpan = 1.5f;
+
     // Prop-name fragments (case-insensitive) that mark a false-positive highlight. A mobile lighting
     // tower registers as searchable but never prompts, so it is excluded.
     private static readonly string[] ExcludedProps = { "Mobile_lighting_tower" };
@@ -341,6 +361,32 @@ public class Plugin : BasePlugin
         return false;
     }
 
+    // Decorative foliage (ivy, bushes) baked into a container's prefab root - a survivor drop or a
+    // wall dispenser sits in a bush - outlines as a jagged spiky cluster. It is matched by name
+    // PREFIX, because harvestable plant loot has "Plant_"-prefixed meshes ("Plant_Bush_B",
+    // "Plant_FlowersRedBush") that would be caught by a bare "Bush" fragment. Every decorative asset
+    // starts with "Bush" or "Ivy"; no real plant does.
+    private static readonly string[] ExcludedMeshPrefixes = { "Bush", "Ivy" };
+
+    // Mesh-name fragments (case-insensitive) whose renderer must never be outlined. See the skip-mesh
+    // block in EnsureOutlines for why each is junk. "VegStudio" is a catch-all for other decorative
+    // vegetation-studio assets.
+    private static readonly string[] ExcludedMeshes = { "Wire Span Mesh", "ShadowCaster", "VegStudio" };
+
+    private static bool IsExcludedMesh(string name)
+    {
+        if (string.IsNullOrEmpty(name)) return false;
+        for (int i = 0; i < ExcludedMeshPrefixes.Length; i++)
+        {
+            if (name.StartsWith(ExcludedMeshPrefixes[i], StringComparison.OrdinalIgnoreCase)) return true;
+        }
+        for (int i = 0; i < ExcludedMeshes.Length; i++)
+        {
+            if (name.IndexOf(ExcludedMeshes[i], StringComparison.OrdinalIgnoreCase) >= 0) return true;
+        }
+        return false;
+    }
+
     private static bool IsBigFlatPlane(Renderer r)
     {
         Vector3 s;
@@ -348,6 +394,11 @@ public class Plugin : BasePlugin
         catch { return false; }
         float min = Mathf.Min(s.x, Mathf.Min(s.y, s.z));
         float max = Mathf.Max(s.x, Mathf.Max(s.y, s.z));
+        // A zero-bounds mesh has no silhouette worth outlining.
+        if (max <= FlatDegenerateMax) return true;
+        // A thin, wide ground decal/quad. Width keeps a small flat tool from matching.
+        if (min <= FlatDecalThickness && max >= FlatDecalSpan) return true;
+        // A thin, wide sheet (a parachute) also draws as a bright square.
         return min <= FlatPlaneMinThickness && max >= FlatPlaneMinSpan;
     }
 
@@ -417,15 +468,26 @@ public class Plugin : BasePlugin
             {
                 var c = comps[i];
                 if (c == null) continue;
-                // GetType() on the proxy returns "Component"; the real runtime type comes from the
-                // Il2CppSystem.Object view.
-                var obj = c.TryCast<Il2CppSystem.Object>();
-                names.Add(obj != null ? obj.GetType().Name : c.GetType().Name);
+                names.Add(Il2CppTypeName(c));
             }
             parts = string.Join(", ", names);
         }
         catch (Exception e) { parts = $"<components unavailable: {e.Message}>"; }
         Log.LogDebug($"[unclassified] '{name}' components: {parts}.");
+    }
+
+    // Real il2cpp class name of a component. The C# proxy's GetType() returns the wrapper base
+    // ("Component"/"Object"), so read the native class name straight from the runtime instead.
+    private static string Il2CppTypeName(Component c)
+    {
+        try
+        {
+            var klass = IL2CPP.il2cpp_object_get_class(c.Pointer);
+            var namePtr = IL2CPP.il2cpp_class_get_name(klass);
+            string n = System.Runtime.InteropServices.Marshal.PtrToStringAnsi(namePtr);
+            return string.IsNullOrEmpty(n) ? "?" : n;
+        }
+        catch { return "?"; }
     }
 
     // Wire a corpse to the game's own OutlineController when its dead ZombieActor still has one with
