@@ -1,4 +1,4 @@
 Added: Fuel cans now glow in focus mode, red by default to match the game's own explosive-can highlight. The color and an on/off toggle are in the config.
 Fixed: Cleaner rendering of highlighted objects - no more stray spikes, bright squares, or outlines on nearby foliage.
-Fixed: Unreachable decorations, such as trash piles on military bases, are no longer highlighted.
+Fixed: Some unreachable decorations, such as trash piles on military bases, are no longer highlighted.
 Fixed: Mobile lighting towers are highlighted again; they can hold loot depending on placement.
