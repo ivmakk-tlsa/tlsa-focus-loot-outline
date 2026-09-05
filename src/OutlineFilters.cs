@@ -22,10 +22,6 @@ internal static class OutlineFilters
     public const float FlatDecalThickness = 0.05f;
     public const float FlatDecalSpan = 1.5f;
 
-    // Prop-name fragments (case-insensitive) that mark a false-positive highlight. A mobile lighting
-    // tower registers as searchable but never prompts, so it is excluded.
-    private static readonly string[] ExcludedProps = { "Mobile_lighting_tower" };
-
     // Specific industrial-trash variants seen only as unreachable camp decor (loose garbage piles),
     // not the family. The same "Deco-Industrial-Trash" family also has real lootable dumpsters (e.g.
     // -10), so each decor variant is matched whole: a following digit means a different variant, and
@@ -49,9 +45,9 @@ internal static class OutlineFilters
     // fire-specific, so a lamp or a light switch is not caught.
     private static readonly string[] FireMarkers = { "firebarrel", "fire-interactable", "Fire-Camp" };
 
-    // A scripted-light rig, and a confirmed decor-only trash variant, are never outlined.
-    public static bool IsExcludedProp(string name)
-        => ContainsAny(name, ExcludedProps) || IsExcludedTrashVariant(name);
+    // A confirmed decor-only trash variant is never outlined. The mobile lighting tower was excluded
+    // here before, but it can hold loot depending on placement, so it highlights again.
+    public static bool IsExcludedProp(string name) => IsExcludedTrashVariant(name);
 
     // True when the name is one of the decor-only trash variants, matched whole: a digit right after
     // the variant token means a different variant (so "-2" does not catch "-10"/"-20"), while a

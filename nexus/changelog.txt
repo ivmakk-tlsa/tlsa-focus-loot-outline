@@ -1,5 +1,3 @@
 Added: Fuel cans now glow in focus mode, red by default to match the game's own explosive-can highlight. The color and an on/off toggle are in the config.
-Fixed: Supply caches no longer show stray spikes or a doubled outline.
-Fixed: The ground shadow under a survivor drop no longer outlines as a bright square.
-Fixed: Ivy and bushes around caches, survivor drops, and the antidote dispenser are no longer outlined; harvestable plants still are.
-Fixed: A decorative trash pile in the military camps (which you cannot reach) is no longer outlined; lootable dumpsters still are.
+Fixed: Cleaner rendering of highlighted objects - no more stray spikes, bright squares, or outlines on nearby foliage and decorations.
+Fixed: Mobile lighting towers are highlighted again; they can hold loot depending on placement.

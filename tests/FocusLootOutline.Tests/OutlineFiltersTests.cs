@@ -12,9 +12,10 @@ public class OutlineFiltersTests
     // --- IsExcludedProp ---------------------------------------------------------------------------
 
     [Theory]
-    [InlineData("Mobile_lighting_tower", true)]
-    [InlineData("Mobile_lighting_tower (2)", true)]     // numbered scene copy
-    [InlineData("mobile_lighting_tower", true)]         // case-insensitive
+    // The mobile lighting tower can hold loot depending on placement, so it is NOT excluded.
+    [InlineData("Mobile_lighting_tower", false)]
+    [InlineData("Mobile_lighting_tower (2)", false)]
+    [InlineData("mobile_lighting_tower", false)]
     [InlineData("Deco-Industrial-Trash-1", true)]        // camp decor pile, exact variant
     [InlineData("Deco-Industrial-Trash-1(Clone)", true)] // instanced copy still matches
     [InlineData("Deco-Industrial-Trash-2", true)]        // camp decor pile, exact variant
