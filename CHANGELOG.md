@@ -4,6 +4,20 @@ All notable changes to this mod are documented here. The format follows [Keep a 
 
 ## [Unreleased]
 
+## [1.0.1] - 2026-09-05
+
+### Added
+
+- Carryable fuel cans (a carry interaction) are now outlined, in their own red color by default, to match the game's own red x-ray highlight on the explosive can. The color and an on/off toggle are configurable under `[Color]` (`FuelRed`/`FuelGreen`/`FuelBlue`/`FuelAlpha`) and `[Filter]` (`IncludeFuel`).
+
+### Fixed
+
+- Supply caches no longer draw stray spikes from the beacon cables or a duplicate shadow outline.
+- The ground shadow decal under a survivor drop no longer outlines as a bright square.
+- Decorative ivy and bushes around caches, survivor drops, and the antidote dispenser are no longer outlined, while harvestable plants still are.
+- A decorative industrial-trash pile that appears only as unreachable military-camp decor is no longer outlined; lootable industrial dumpsters still are.
+- Mobile lighting towers are outlined again. They were excluded as a never-lootable false positive, but they can hold loot depending on placement.
+
 ## [1.0.0] - 2026-09-04
 
 ### Added
