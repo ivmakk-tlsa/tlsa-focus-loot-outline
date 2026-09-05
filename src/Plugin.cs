@@ -34,7 +34,7 @@ namespace FocusLootOutline;
 // a box on a vehicle). Two meshes are then filtered out: a big flat plane (a ground quad or a
 // parachute sheet that would draw as a bright square), and a few named false-positive props (a
 // scripted lighting tower that registers as searchable but never prompts).
-[BepInPlugin(PluginGuid, "Focus Loot Outline", "1.0.0")]
+[BepInPlugin(PluginGuid, "Focus Loot Outline", "1.0.1")]
 public class Plugin : BasePlugin
 {
     public const string PluginGuid = "com.ivmakk.tlsa.focuslootoutline";
@@ -172,12 +172,9 @@ public class Plugin : BasePlugin
         public LootContainer Loot;
         public StashContainer Stash;
         public CacheContainer Cache;
-        // The used-up state sources for a Gated interactable, so it can be un-highlighted once spent
-        // the way Loot/Cache use their searched state. A dispenser has one or the other; both null for
-        // other gated kinds. Refill is the use-count dispenser; ItemGate is the item-gated box (needs
-        // a battery, then dispenses once).
+        // The use-count state source for a Gated antidote dispenser, so it can be un-highlighted once
+        // spent the way Loot/Cache use their searched state. Null for other gated kinds.
         public AntiViralRefillInteraction Refill;
-        public ItemRequirementInteraction ItemGate;
         public GameObject GameObject;
         public List<OutlineRenderer> Outlines;
 
@@ -251,14 +248,10 @@ public class Plugin : BasePlugin
                 return true;
             case Kind.Gated:
                 if (!IncludeGated.Value) return false;
-                // A dispenser stops prompting once it is spent. Skip it then, the same as a searched
-                // loot box or a depleted cache. A use-count dispenser is spent when its uses run out;
-                // an item-gated box (needs a battery, dispenses once) is spent once it is unlocked.
-                if (OnlyUnsearched.Value)
-                {
-                    if (t.Refill != null && IsRefillDepleted(t.Refill)) return false;
-                    if (t.ItemGate != null && IsItemGateUsedUp(t.ItemGate)) return false;
-                }
+                // A use-count dispenser stops prompting once its uses run out. Skip it then, the same
+                // as a searched loot box or a depleted cache. A battery-gated box has no reliable
+                // used-up signal (see ticket 0004), so it stays highlighted while it can be interacted.
+                if (OnlyUnsearched.Value && t.Refill != null && IsRefillDepleted(t.Refill)) return false;
                 return true;
             case Kind.ToolGated:
                 return IncludeToolGated.Value;
@@ -291,24 +284,6 @@ public class Plugin : BasePlugin
         catch (Exception e)
         {
             if (Verbose.Value) Log.LogWarning($"[gated] refill state read failed: {e.Message}");
-            return false;
-        }
-    }
-
-    // A battery-gated antidote box is spent once it is unlocked: the battery is in and the antidote
-    // dispensed, so it no longer prompts. This covers the CoverInteraction/AntiViralDispenser box that
-    // has no use-count. m_OneTimeOnly is logged so a repeatable gate (which re-locks) can be told apart.
-    internal static bool IsItemGateUsedUp(ItemRequirementInteraction g)
-    {
-        try
-        {
-            bool unlocked = g.Unlocked;
-            if (Verbose.Value) Log.LogDebug($"[gated] itemreq unlocked={unlocked} oneTimeOnly={g.m_OneTimeOnly} consume={g.m_ConsumeItem}.");
-            return unlocked;
-        }
-        catch (Exception e)
-        {
-            if (Verbose.Value) Log.LogWarning($"[gated] itemreq state read failed: {e.Message}");
             return false;
         }
     }
@@ -815,13 +790,10 @@ public static class InteractableAwakePatch
         // First match is the tracked group. The rest are logged so a multi-layer item is visible.
         var kind = layers[0];
         var t = new Plugin.Tracked { Kind = kind, GameObject = go };
-        // Capture the dispenser's used-up state sources so they can gate the highlight (see
-        // ShouldHighlight). A box is one or the other; both may be absent for other gated kinds.
+        // Capture a use-count dispenser's state source so it can gate the highlight (see
+        // ShouldHighlight). Absent for other gated kinds.
         if (kind == Plugin.Kind.Gated)
-        {
             t.Refill = go.GetComponent<AntiViralRefillInteraction>();
-            t.ItemGate = go.GetComponent<ItemRequirementInteraction>();
-        }
         Plugin.Registry[__instance.Pointer] = t;
         if (Plugin.Verbose.Value)
         {
