@@ -51,7 +51,7 @@ public class Plugin : BasePlugin
     internal static ConfigEntry<float> Alpha;
     internal static ConfigEntry<float> Strength;
 
-    // The fuel-can outline color, its own category so a fuel can can differ from the shared color.
+    // The fuel-can outline color, its own category so a fuel can outlines apart from the shared color.
     // Default is red, to match the game's own red x-ray highlight on the explosive can.
     internal static ConfigEntry<float> FuelRed;
     internal static ConfigEntry<float> FuelGreen;
@@ -315,6 +315,9 @@ public class Plugin : BasePlugin
         if (OutlineFilters.IsExcludedProp(root.name))
         {
             if (Verbose.Value) Log.LogDebug($"[skip-prop] '{go.name}' root '{root.name}' is excluded.");
+            // Null the outline list so SetGlow hits its null-guard and Lit stays false: an excluded
+            // prop draws nothing, so it must not appear as lit in the Verbose focus snapshot.
+            t.Outlines = null;
             return;
         }
 
