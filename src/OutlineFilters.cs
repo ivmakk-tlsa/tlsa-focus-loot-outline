@@ -62,11 +62,18 @@ internal static class OutlineFilters
         for (int i = 0; i < ExcludedTrashVariants.Length; i++)
         {
             var v = ExcludedTrashVariants[i];
-            int idx = name.IndexOf(v, StringComparison.OrdinalIgnoreCase);
-            if (idx < 0) continue;
-            int after = idx + v.Length;
-            if (after < name.Length && char.IsDigit(name[after])) continue;
-            return true;
+            // Walk every occurrence of the token, not only the first. A first hit that is
+            // followed by a digit is a different variant ("-10"), but a later occurrence may
+            // still be a valid whole match, so keep scanning past a digit-suffixed hit.
+            int from = 0;
+            while (true)
+            {
+                int idx = name.IndexOf(v, from, StringComparison.OrdinalIgnoreCase);
+                if (idx < 0) break;
+                int after = idx + v.Length;
+                if (after >= name.Length || !char.IsDigit(name[after])) return true;
+                from = idx + 1;
+            }
         }
         return false;
     }
