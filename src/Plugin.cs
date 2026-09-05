@@ -51,6 +51,13 @@ public class Plugin : BasePlugin
     internal static ConfigEntry<float> Alpha;
     internal static ConfigEntry<float> Strength;
 
+    // The fuel-can outline color, its own category so a fuel can can differ from the shared color.
+    // Default is red, to match the game's own red x-ray highlight on the explosive can.
+    internal static ConfigEntry<float> FuelRed;
+    internal static ConfigEntry<float> FuelGreen;
+    internal static ConfigEntry<float> FuelBlue;
+    internal static ConfigEntry<float> FuelAlpha;
+
     // When false, the outline draws over everything (x-ray), which is easiest to spot. When true,
     // walls occlude it.
     internal static ConfigEntry<bool> DepthTest;
@@ -72,6 +79,9 @@ public class Plugin : BasePlugin
     // Loose loot and pickups.
     internal static ConfigEntry<bool> IncludePickups;
 
+    // Carryable fuel cans, outlined in the Fuel color (red by default).
+    internal static ConfigEntry<bool> IncludeFuel;
+
     // Crafting and utility stations (workbench, merchant, supply store, upgrades, shrine).
     internal static ConfigEntry<bool> IncludeStations;
 
@@ -82,10 +92,17 @@ public class Plugin : BasePlugin
     // attach work over several frames so the first focus press does not stutter.
     internal static ConfigEntry<int> AttachPerFrame;
 
+    // Dev overlay: draw each highlighted object's render-root name and kind on screen while focus is
+    // active, to name a wrongly highlighted prop for a filter. Off by default.
+    internal static ConfigEntry<bool> DevLabels;
+
     private static float Clamp01(float v) => v < 0f ? 0f : (v > 1f ? 1f : v);
 
     internal static Color OutlineColor =>
         new Color(Clamp01(Red.Value), Clamp01(Green.Value), Clamp01(Blue.Value), Clamp01(Alpha.Value));
+
+    internal static Color FuelColor =>
+        new Color(Clamp01(FuelRed.Value), Clamp01(FuelGreen.Value), Clamp01(FuelBlue.Value), Clamp01(FuelAlpha.Value));
 
     // Every tracked container, keyed by native pointer.
     internal static readonly Dictionary<IntPtr, Tracked> Registry = new Dictionary<IntPtr, Tracked>();
@@ -95,6 +112,10 @@ public class Plugin : BasePlugin
 
     // Shared outline category all container outlines reference. Built lazily on first use.
     internal static OutlineCategory Category;
+
+    // The fuel-can outline category (red by default), so a fuel can outlines apart from the shared
+    // color. Built alongside Category.
+    internal static OutlineCategory FuelCategory;
 
     // True while focus mode is active, so a container registered mid-focus can be lit immediately.
     internal static bool FocusActive;
@@ -112,6 +133,11 @@ public class Plugin : BasePlugin
         Alpha = Config.Bind("Color", "Alpha", 1f, new ConfigDescription("Outline alpha.", new AcceptableValueRange<float>(0f, 1f)));
         Strength = Config.Bind("Color", "Strength", 1f, "Outline fresnel strength.");
 
+        FuelRed = Config.Bind("Color", "FuelRed", 1f, new ConfigDescription("Fuel-can outline red channel. Default red, to match the game's own explosive-can highlight.", new AcceptableValueRange<float>(0f, 1f)));
+        FuelGreen = Config.Bind("Color", "FuelGreen", 0f, new ConfigDescription("Fuel-can outline green channel.", new AcceptableValueRange<float>(0f, 1f)));
+        FuelBlue = Config.Bind("Color", "FuelBlue", 0f, new ConfigDescription("Fuel-can outline blue channel.", new AcceptableValueRange<float>(0f, 1f)));
+        FuelAlpha = Config.Bind("Color", "FuelAlpha", 1f, new ConfigDescription("Fuel-can outline alpha.", new AcceptableValueRange<float>(0f, 1f)));
+
         DepthTest = Config.Bind("Visibility", "DepthTest", false, "false draws the outline over walls (x-ray); true lets walls occlude it.");
         OnlyUnsearched = Config.Bind("Filter", "OnlyUnsearched", true, "Highlight only containers that are not yet searched or depleted.");
         IncludeStashes = Config.Bind("Filter", "IncludeStashes", true, "Highlight sector stashes.");
@@ -119,9 +145,11 @@ public class Plugin : BasePlugin
         IncludeGated = Config.Bind("Filter", "IncludeGated", true, "Highlight battery/item-gated interactables (antidote dispensers, containers that need a battery).");
         IncludeToolGated = Config.Bind("Filter", "IncludeToolGated", true, "Highlight tool-gated interactables (need a tool to unlock).");
         IncludePickups = Config.Bind("Filter", "IncludePickups", true, "Highlight loose loot and pickups (ground items, survivor drops, tool rewards).");
+        IncludeFuel = Config.Bind("Filter", "IncludeFuel", true, "Highlight carryable fuel cans, in the Fuel color (red by default, matching the game's own explosive-can highlight).");
         IncludeStations = Config.Bind("Filter", "IncludeStations", true, "Highlight crafting and utility stations (workbench, merchant, supply store, upgrades, shrine).");
         IncludeObjectives = Config.Bind("Filter", "IncludeObjectives", true, "Highlight objectives and misc (power generator, books, XP interactions).");
         AttachPerFrame = Config.Bind("Performance", "AttachPerFrame", 4, new ConfigDescription("How many containers attach outlines per frame after focus starts. Lower is smoother but takes longer to fully light.", new AcceptableValueRange<int>(1, 32)));
+        DevLabels = Config.Bind("Diagnostics", "DevLabels", false, "Dev overlay: while focus is active, draw each highlighted object's render-root name and kind on screen, so a wrongly highlighted prop can be named. Local diagnostic; keep off in normal play.");
 
         new Harmony(PluginGuid).PatchAll();
 
@@ -134,7 +162,7 @@ public class Plugin : BasePlugin
         Log.LogInfo("Focus Loot Outline loaded.");
     }
 
-    internal enum Kind { Loot, Stash, Cache, Gated, ToolGated, Pickup, Station, Objective }
+    internal enum Kind { Loot, Stash, Cache, Gated, ToolGated, Pickup, Station, Objective, Fuel }
 
     // A registered container. Holds the typed reference for its state checks, the GameObject to
     // outline, and the outline renderers once attached.
@@ -144,8 +172,20 @@ public class Plugin : BasePlugin
         public LootContainer Loot;
         public StashContainer Stash;
         public CacheContainer Cache;
+        // The used-up state sources for a Gated interactable, so it can be un-highlighted once spent
+        // the way Loot/Cache use their searched state. A dispenser has one or the other; both null for
+        // other gated kinds. Refill is the use-count dispenser; ItemGate is the item-gated box (needs
+        // a battery, then dispenses once).
+        public AntiViralRefillInteraction Refill;
+        public ItemRequirementInteraction ItemGate;
         public GameObject GameObject;
         public List<OutlineRenderer> Outlines;
+
+        // The render root chosen by FindRenderRoot: its name for the dev label (this is the name a
+        // filter matches on), and its transform as the label's world anchor. Set at attach time.
+        public string RootName;
+        public Transform Anchor;
+
         public bool AttachTried;
         public bool Lit;
         public bool Queued;
@@ -157,31 +197,40 @@ public class Plugin : BasePlugin
         public bool UsesController;
     }
 
-    // Build or refresh the shared category from config so a live color edit is honored.
+    // Build or refresh the outline categories from config so a live color edit is honored. The shared
+    // category colors every highlight; the fuel category colors carryable fuel cans apart from it.
     internal static void RefreshCategory()
     {
-        Color color = OutlineColor;
-        if (Category == null)
+        Category = BuildCategory(Category, OutlineColor, "shared");
+        FuelCategory = BuildCategory(FuelCategory, FuelColor, "fuel");
+    }
+
+    // Create the category on first use, then set its active/inactive state from config. DepthTest and
+    // Strength are shared across both categories; only the color differs.
+    private static OutlineCategory BuildCategory(OutlineCategory cat, Color color, string label)
+    {
+        if (cat == null)
         {
-            Category = ScriptableObject.CreateInstance<OutlineCategory>();
-            Category.m_Active = new OutlineCategory.State();
-            Category.m_Inactive = new OutlineCategory.State();
-            if (Verbose.Value) Log.LogDebug("[cat] created shared OutlineCategory.");
+            cat = ScriptableObject.CreateInstance<OutlineCategory>();
+            cat.m_Active = new OutlineCategory.State();
+            cat.m_Inactive = new OutlineCategory.State();
+            if (Verbose.Value) Log.LogDebug($"[cat] created {label} OutlineCategory.");
         }
 
-        var active = Category.m_Active;
+        var active = cat.m_Active;
         active.m_Enabled = true;
         active.m_DepthTest = DepthTest.Value;
         active.m_Color = color;
         active.m_ColorblindColor = color;
         active.m_FresnelStrength = Strength.Value;
 
-        var inactive = Category.m_Inactive;
+        var inactive = cat.m_Inactive;
         inactive.m_Enabled = false;
         inactive.m_DepthTest = DepthTest.Value;
         inactive.m_Color = color;
         inactive.m_ColorblindColor = color;
         inactive.m_FresnelStrength = 0f;
+        return cat;
     }
 
     internal static bool ShouldHighlight(Tracked t)
@@ -201,17 +250,67 @@ public class Plugin : BasePlugin
                 if (OnlyUnsearched.Value && t.Cache.SearchCount > 0) return false;
                 return true;
             case Kind.Gated:
-                return IncludeGated.Value;
+                if (!IncludeGated.Value) return false;
+                // A dispenser stops prompting once it is spent. Skip it then, the same as a searched
+                // loot box or a depleted cache. A use-count dispenser is spent when its uses run out;
+                // an item-gated box (needs a battery, dispenses once) is spent once it is unlocked.
+                if (OnlyUnsearched.Value)
+                {
+                    if (t.Refill != null && IsRefillDepleted(t.Refill)) return false;
+                    if (t.ItemGate != null && IsItemGateUsedUp(t.ItemGate)) return false;
+                }
+                return true;
             case Kind.ToolGated:
                 return IncludeToolGated.Value;
             case Kind.Pickup:
                 return IncludePickups.Value;
+            case Kind.Fuel:
+                return IncludeFuel.Value;
             case Kind.Station:
                 return IncludeStations.Value;
             case Kind.Objective:
                 return IncludeObjectives.Value;
         }
         return false;
+    }
+
+    // An antidote dispenser tracks m_UseCount against m_MaxUses. When the count reaches the max it is
+    // used up and no longer prompts, so treat it as depleted. m_MaxUses is an override value; a
+    // single-use dispenser is the common case, so fall back to 1 when the override reads non-positive.
+    internal static bool IsRefillDepleted(AntiViralRefillInteraction r)
+    {
+        try
+        {
+            int used = r.m_UseCount;
+            int rawMax = 0;
+            var mo = r.m_MaxUses;
+            if (mo != null) rawMax = mo.Value;
+            if (Verbose.Value) Log.LogDebug($"[gated] refill useCount={used} maxUses(raw)={rawMax} active={(mo != null && mo.Active)}.");
+            return OutlineFilters.IsRefillDepleted(used, rawMax);
+        }
+        catch (Exception e)
+        {
+            if (Verbose.Value) Log.LogWarning($"[gated] refill state read failed: {e.Message}");
+            return false;
+        }
+    }
+
+    // A battery-gated antidote box is spent once it is unlocked: the battery is in and the antidote
+    // dispensed, so it no longer prompts. This covers the CoverInteraction/AntiViralDispenser box that
+    // has no use-count. m_OneTimeOnly is logged so a repeatable gate (which re-locks) can be told apart.
+    internal static bool IsItemGateUsedUp(ItemRequirementInteraction g)
+    {
+        try
+        {
+            bool unlocked = g.Unlocked;
+            if (Verbose.Value) Log.LogDebug($"[gated] itemreq unlocked={unlocked} oneTimeOnly={g.m_OneTimeOnly} consume={g.m_ConsumeItem}.");
+            return unlocked;
+        }
+        catch (Exception e)
+        {
+            if (Verbose.Value) Log.LogWarning($"[gated] itemreq state read failed: {e.Message}");
+            return false;
+        }
     }
 
     // Add an OutlineRenderer to each mesh under the container and wire it to the shared category.
@@ -233,10 +332,12 @@ public class Plugin : BasePlugin
         RefreshCategory();
 
         var root = FindRenderRoot(go);
+        t.RootName = root.name;
+        t.Anchor = root.transform;
 
         // Skip props that register as searchable but never prompt the player (a scripted light rig).
         // They are false positives, so leave them unlit.
-        if (IsExcludedProp(root.name))
+        if (OutlineFilters.IsExcludedProp(root.name))
         {
             if (Verbose.Value) Log.LogDebug($"[skip-prop] '{go.name}' root '{root.name}' is excluded.");
             return;
@@ -296,7 +397,7 @@ public class Plugin : BasePlugin
             // (seen on the HERC supply cache beacon); a "ShadowCaster" is a shadow-only proxy that
             // just duplicates the real silhouette; and decorative foliage (ivy/bush) baked into a
             // container root outlines as a jagged cluster. See ExcludedMeshes.
-            if (IsExcludedMesh(r.gameObject.name))
+            if (OutlineFilters.IsExcludedMesh(r.gameObject.name))
             {
                 if (Verbose.Value) Log.LogDebug($"[skip-mesh] '{go.name}' mesh '{r.gameObject.name}' is excluded.");
                 continue;
@@ -306,7 +407,7 @@ public class Plugin : BasePlugin
             {
                 var existing = r.gameObject.GetComponent<OutlineRenderer>();
                 var or = existing != null ? existing : r.gameObject.AddComponent<OutlineRenderer>();
-                or.Category = Category;
+                or.Category = t.Kind == Kind.Fuel ? FuelCategory : Category;
                 or.m_Renderer = r;
                 if (smr != null)
                 {
@@ -330,76 +431,17 @@ public class Plugin : BasePlugin
         }
 
         if (Verbose.Value)
-            Log.LogDebug($"[attach] '{go.name}' kind={t.Kind}: {made} outline(s) from {renderers.Length} renderer(s) under '{root.name}'.");
+            Log.LogDebug($"[attach] {Now()} '{go.name}' kind={t.Kind}: {made} outline(s) from {renderers.Length} renderer(s) under '{root.name}'.");
     }
 
-    // A big flat plane has one near-zero axis and one wide axis. A ground quad or a parachute sheet
-    // fits this; a loot mesh (box, corpse, bench part) never does.
-    private const float FlatPlaneMinThickness = 0.3f;
-    private const float FlatPlaneMinSpan = 4f;
-
-    // A zero-bounds mesh (a merged/degenerate renderer) has no real silhouette and draws as garbage.
-    private const float FlatDegenerateMax = 0.02f;
-
-    // A ground decal/quad is paper-thin AND wide. The width bound is what tells it from a small flat
-    // tool (a wrench, a plate, a lid), which is thin but only a few dozen cm across, so a tool keeps
-    // its outline while a survivor-drop ground quad (about 3.3 m) is dropped.
-    private const float FlatDecalThickness = 0.05f;
-    private const float FlatDecalSpan = 1.5f;
-
-    // Prop-name fragments (case-insensitive) that mark a false-positive highlight. A mobile lighting
-    // tower registers as searchable but never prompts, so it is excluded.
-    private static readonly string[] ExcludedProps = { "Mobile_lighting_tower" };
-
-    private static bool IsExcludedProp(string name)
-    {
-        if (string.IsNullOrEmpty(name)) return false;
-        for (int i = 0; i < ExcludedProps.Length; i++)
-        {
-            if (name.IndexOf(ExcludedProps[i], StringComparison.OrdinalIgnoreCase) >= 0) return true;
-        }
-        return false;
-    }
-
-    // Decorative foliage (ivy, bushes) baked into a container's prefab root - a survivor drop or a
-    // wall dispenser sits in a bush - outlines as a jagged spiky cluster. It is matched by name
-    // PREFIX, because harvestable plant loot has "Plant_"-prefixed meshes ("Plant_Bush_B",
-    // "Plant_FlowersRedBush") that would be caught by a bare "Bush" fragment. Every decorative asset
-    // starts with "Bush" or "Ivy"; no real plant does.
-    private static readonly string[] ExcludedMeshPrefixes = { "Bush", "Ivy" };
-
-    // Mesh-name fragments (case-insensitive) whose renderer must never be outlined. See the skip-mesh
-    // block in EnsureOutlines for why each is junk. "VegStudio" is a catch-all for other decorative
-    // vegetation-studio assets.
-    private static readonly string[] ExcludedMeshes = { "Wire Span Mesh", "ShadowCaster", "VegStudio" };
-
-    private static bool IsExcludedMesh(string name)
-    {
-        if (string.IsNullOrEmpty(name)) return false;
-        for (int i = 0; i < ExcludedMeshPrefixes.Length; i++)
-        {
-            if (name.StartsWith(ExcludedMeshPrefixes[i], StringComparison.OrdinalIgnoreCase)) return true;
-        }
-        for (int i = 0; i < ExcludedMeshes.Length; i++)
-        {
-            if (name.IndexOf(ExcludedMeshes[i], StringComparison.OrdinalIgnoreCase) >= 0) return true;
-        }
-        return false;
-    }
-
+    // Read the renderer's world bounds and hand the flat-plane test to the game-free OutlineFilters
+    // (see that file and its unit tests). Returns false when the bounds cannot be read.
     private static bool IsBigFlatPlane(Renderer r)
     {
         Vector3 s;
         try { s = r.bounds.size; }
         catch { return false; }
-        float min = Mathf.Min(s.x, Mathf.Min(s.y, s.z));
-        float max = Mathf.Max(s.x, Mathf.Max(s.y, s.z));
-        // A zero-bounds mesh has no silhouette worth outlining.
-        if (max <= FlatDegenerateMax) return true;
-        // A thin, wide ground decal/quad. Width keeps a small flat tool from matching.
-        if (min <= FlatDecalThickness && max >= FlatDecalSpan) return true;
-        // A thin, wide sheet (a parachute) also draws as a bright square.
-        return min <= FlatPlaneMinThickness && max >= FlatPlaneMinSpan;
+        return OutlineFilters.IsBigFlatPlane(s.x, s.y, s.z);
     }
 
     // A prop's mesh count. An ancestor whose subtree holds more renderers than this is a scene
@@ -459,7 +501,35 @@ public class Plugin : BasePlugin
     {
         string name = go.name;
         if (!LoggedUnclassified.Add(name)) return;
-        string parts;
+        string parts = ComponentNames(go);
+
+        // Also log the interactable's localized-name path and ObjectRoot. Some interactables (the
+        // unlit campfire) carry no handler component - their action is a UnityEvent - so the name
+        // path and the driven prop are the only signals to classify them by.
+        string loc = "?", objRoot = "?";
+        try
+        {
+            var it = go.GetComponent<Interactable>();
+            if (it != null)
+            {
+                try { loc = it.m_LocalizedNamePath; } catch { }
+                try { objRoot = it.ObjectRoot != null ? it.ObjectRoot.name : "<null>"; } catch { }
+            }
+        }
+        catch { }
+        Log.LogDebug($"[unclassified] '{name}' locPath='{loc}' objRoot='{objRoot}' components: {parts}.");
+    }
+
+    // Wall-clock time for a log line. BepInEx does not timestamp its disk log, so the mod stamps its
+    // own diagnostic lines, making the focus snapshot (see the ENTER line in HighlightAll) correlatable
+    // to an external moment.
+    internal static string Now() => DateTime.Now.ToString("HH:mm:ss.fff");
+
+    // The real il2cpp class names of a GameObject's components, comma-joined. Used to classify an
+    // interactable that no known handler matched, and to trace a Gated box whose used-up state lives
+    // on a varying component.
+    internal static string ComponentNames(GameObject go)
+    {
         try
         {
             var comps = go.GetComponents<Component>();
@@ -470,10 +540,9 @@ public class Plugin : BasePlugin
                 if (c == null) continue;
                 names.Add(Il2CppTypeName(c));
             }
-            parts = string.Join(", ", names);
+            return string.Join(", ", names);
         }
-        catch (Exception e) { parts = $"<components unavailable: {e.Message}>"; }
-        Log.LogDebug($"[unclassified] '{name}' components: {parts}.");
+        catch (Exception e) { return $"<components unavailable: {e.Message}>"; }
     }
 
     // Real il2cpp class name of a component. The C# proxy's GetType() returns the wrapper base
@@ -603,7 +672,18 @@ public class Plugin : BasePlugin
         for (int i = 0; i < dead.Count; i++) Registry.Remove(dead[i]);
 
         if (Verbose.Value)
-            Log.LogDebug($"[focus] ENTER: registry={Registry.Count} litNow={litNow} queued={queued}.");
+        {
+            // A timestamped snapshot of what is lit right now, so this line names every highlighted
+            // object at a known moment. Queued (not-yet-attached) objects have no name yet and appear
+            // on the next press.
+            var lit = new List<string>();
+            foreach (var pair in Registry)
+            {
+                var tt = pair.Value;
+                if (tt.Lit && tt.RootName != null) lit.Add($"{tt.RootName}[{tt.Kind}]");
+            }
+            Log.LogDebug($"[focus] {Now()} ENTER registry={Registry.Count} litNow={litNow} queued={queued} lit=[{string.Join(", ", lit)}].");
+        }
     }
 
     // Attach outlines for a few queued containers per frame, then light them. Called by the ticker.
@@ -621,6 +701,39 @@ public class Plugin : BasePlugin
             EnsureOutlines(t);
             if (FocusActive && ShouldHighlight(t)) SetGlow(t, true);
         }
+    }
+
+    // Dev overlay: label every lit object with its render-root name and kind, so a wrongly
+    // highlighted prop can be named for a filter. Drawn from the ticker's OnGUI, gated on DevLabels.
+    internal static void DrawDevLabels()
+    {
+        if (!FocusActive || DevLabels == null || !DevLabels.Value) return;
+
+        var cam = Camera.main;
+        if (cam == null)
+        {
+            var all = Camera.allCameras;
+            if (all != null && all.Length > 0) cam = all[0];
+        }
+        if (cam == null) return;
+
+        var prev = GUI.color;
+        GUI.color = Color.yellow;
+        foreach (var pair in Registry)
+        {
+            var t = pair.Value;
+            if (t == null || !t.Lit || t.Anchor == null) continue;
+            // Label only what actually draws an outline. An excluded prop is marked lit but has no
+            // outlines, so skipping the empty ones keeps a label from floating on an un-outlined prop.
+            bool hasOutline = t.UsesController || (t.Outlines != null && t.Outlines.Count > 0);
+            if (!hasOutline) continue;
+            Vector3 sp;
+            try { sp = cam.WorldToScreenPoint(t.Anchor.position); }
+            catch { continue; }
+            if (sp.z <= 0f) continue; // behind the camera
+            GUI.Label(new Rect(sp.x - 4f, Screen.height - sp.y, 460f, 22f), $"{t.RootName} [{t.Kind}]");
+        }
+        GUI.color = prev;
     }
 }
 
@@ -701,10 +814,25 @@ public static class InteractableAwakePatch
 
         // First match is the tracked group. The rest are logged so a multi-layer item is visible.
         var kind = layers[0];
-        Plugin.Registry[__instance.Pointer] = new Plugin.Tracked { Kind = kind, GameObject = go };
+        var t = new Plugin.Tracked { Kind = kind, GameObject = go };
+        // Capture the dispenser's used-up state sources so they can gate the highlight (see
+        // ShouldHighlight). A box is one or the other; both may be absent for other gated kinds.
+        if (kind == Plugin.Kind.Gated)
+        {
+            t.Refill = go.GetComponent<AntiViralRefillInteraction>();
+            t.ItemGate = go.GetComponent<ItemRequirementInteraction>();
+        }
+        Plugin.Registry[__instance.Pointer] = t;
         if (Plugin.Verbose.Value)
         {
             string extra = layers.Count > 1 ? $" layers=[{string.Join(", ", layers)}]" : "";
+            // A Gated box's used-up state lives on a component that varies by dispenser type. Log the
+            // component list and interaction-enabled flag so a variant that still stays lit is classifiable.
+            if (kind == Plugin.Kind.Gated)
+            {
+                bool enabled = true; try { enabled = __instance.IsInteractionEnabled; } catch { }
+                extra += $" enabled={enabled} comps=[{Plugin.ComponentNames(go)}]";
+            }
             Plugin.Log.LogDebug($"[reg] {kind} interactable '{go.name}'.{extra}");
         }
         if (Plugin.FocusActive) Plugin.HighlightAll(true);
@@ -721,6 +849,12 @@ public static class InteractableAwakePatch
             layers.Add(Plugin.Kind.Gated);
         if (go.GetComponent<ToolRequirementInteraction>() != null)
             layers.Add(Plugin.Kind.ToolGated);
+        // A carryable fuel can (CarryInteraction) is its own kind, outlined red to match the game's
+        // own red x-ray highlight on the explosive can. Checked before Pickup so a can routes to the
+        // Fuel (red) category, not the shared Pickup color. This assumes CarryInteraction marks the
+        // fuel can; if another carryable prop shares the component, it would also outline red.
+        if (go.GetComponent<CarryInteraction>() != null)
+            layers.Add(Plugin.Kind.Fuel);
         if (go.GetComponent<PickupItem>() != null
             || go.GetComponent<SurvivorDrop>() != null
             || go.GetComponent<ToolRewardInteraction>() != null)
@@ -735,7 +869,57 @@ public static class InteractableAwakePatch
             || go.GetComponent<BookInteraction>() != null
             || go.GetComponent<AwardXpInteraction>() != null)
             layers.Add(Plugin.Kind.Objective);
+        // An unlit campfire has no interaction handler component (its "light" action is a UnityEvent),
+        // so no component above matches it. Classify it by the fire-barrel prop it drives. Once lit it
+        // gains a CraftingInteraction and is a Station on its own; matching the prop keeps it a Station
+        // while unlit too. Kept last so a real handler component always wins first.
+        if (layers.Count == 0 && IsFireInteractable(go))
+            layers.Add(Plugin.Kind.Station);
         return layers;
+    }
+
+    // True when this interactable drives a fire barrel / campfire prop. Matched on the prop name
+    // (the GameObject or its ObjectRoot), which is fire-specific, so a lamp or light switch is not
+    // caught. "deco-fire-interactable-barrel" and "fire-firebarrel" are the fire prop names seen.
+    private static bool IsFireInteractable(GameObject go)
+    {
+        if (OutlineFilters.NameMarksFire(go.name)) return true;
+        try
+        {
+            var it = go.GetComponent<Interactable>();
+            var root = it != null ? it.ObjectRoot : null;
+            if (root != null && OutlineFilters.NameMarksFire(root.name)) return true;
+        }
+        catch { }
+        return false;
+    }
+}
+
+// When the antidote is dispensed, the wall box's use count advances. If that empties it, drop its
+// glow at once instead of waiting for the next focus press, so a used dispenser stops standing out
+// the moment it is taken. ShouldHighlight keeps it dark on later focus presses.
+[HarmonyPatch(typeof(AntiViralRefillInteraction), "OnInteractionCompleted")]
+public static class RefillCompletedPatch
+{
+    [HarmonyPostfix]
+    public static void Postfix(AntiViralRefillInteraction __instance)
+    {
+        try
+        {
+            if (!Plugin.OnlyUnsearched.Value) return;
+            var interactable = __instance.GetComponent<Interactable>();
+            if (interactable == null) return;
+            if (Plugin.Registry.TryGetValue(interactable.Pointer, out var t)
+                && t.Lit && Plugin.IsRefillDepleted(__instance))
+            {
+                Plugin.SetGlow(t, false);
+                if (Plugin.Verbose.Value) Plugin.Log.LogDebug($"[gated] '{t.GameObject?.name}' depleted; glow off.");
+            }
+        }
+        catch (Exception e)
+        {
+            if (Plugin.Verbose.Value) Plugin.Log.LogWarning($"[gated] completion hook failed: {e.Message}");
+        }
     }
 }
 
@@ -747,7 +931,7 @@ public static class FocusStartPatch
     [HarmonyPostfix]
     public static void Postfix(FocusController __instance)
     {
-        if (Plugin.Verbose.Value) Plugin.Log.LogDebug($"[focus] StartFocus fired (IsFocusActive={__instance.IsFocusActive}).");
+        if (Plugin.Verbose.Value) Plugin.Log.LogDebug($"[focus] {Plugin.Now()} StartFocus fired (IsFocusActive={__instance.IsFocusActive}).");
         Plugin.HighlightAll(true);
     }
 }
@@ -758,7 +942,7 @@ public static class FocusEndPatch
     [HarmonyPostfix]
     public static void Postfix()
     {
-        if (Plugin.Verbose.Value) Plugin.Log.LogDebug("[focus] EndFocus fired.");
+        if (Plugin.Verbose.Value) Plugin.Log.LogDebug($"[focus] {Plugin.Now()} EndFocus fired.");
         Plugin.HighlightAll(false);
     }
 }
@@ -772,4 +956,10 @@ public class Ticker : MonoBehaviour
     public Ticker(IntPtr ptr) : base(ptr) { }
 
     public void LateUpdate() => Plugin.DrainAttachQueue();
+
+    public void OnGUI()
+    {
+        try { Plugin.DrawDevLabels(); }
+        catch (Exception e) { if (Plugin.Verbose.Value) Plugin.Log.LogWarning($"[devlabels] {e.Message}"); }
+    }
 }

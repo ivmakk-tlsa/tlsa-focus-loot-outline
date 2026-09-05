@@ -7,9 +7,11 @@
     <Version>1.0.0</Version>
   </PropertyGroup>
 
-  <!-- FocusController's base type (DataBinderBehaviour) lives in DeadReckoned.Tlsa. -->
+  <!-- FocusController's base type (DataBinderBehaviour) lives in DeadReckoned.Tlsa.
+       UnityEngine.IMGUIModule provides GUI for the dev-label overlay. -->
   <ItemGroup>
     <Reference Include="DeadReckoned.Tlsa"><HintPath>$(BepInExInterop)\DeadReckoned.Tlsa.dll</HintPath><Private>false</Private></Reference>
+    <Reference Include="UnityEngine.IMGUIModule"><HintPath>$(BepInExInterop)\UnityEngine.IMGUIModule.dll</HintPath><Private>false</Private></Reference>
   </ItemGroup>
 
 </Project>
