@@ -8,6 +8,7 @@ using Game.Actors;
 using Game.Actors.Helpers;
 using Game.Logic.Controllers;
 using Game.Logic.Interaction;
+using Game.Logic.Sensors;
 using Game.Maps.Markup;
 using Game.Props;
 using Game.Rendering;
@@ -31,10 +32,11 @@ namespace FocusLootOutline;
 //
 // The mesh to outline is found by FindRenderRoot: the Interactable's ObjectRoot when it has meshes,
 // else the nearest ancestor that does (for a loot box whose mesh is a sibling on a shared prop, like
-// a box on a vehicle). Two meshes are then filtered out: a big flat plane (a ground quad or a
-// parachute sheet that would draw as a bright square), and a few named false-positive props (a
-// scripted lighting tower that registers as searchable but never prompts).
-[BepInPlugin(PluginGuid, "Focus Loot Outline", "1.0.1")]
+// a box on a vehicle). Decor copies of loot props are left dark by two rules: an object the game's
+// sensor cannot detect (its search collider disabled) is skipped for every kind, and a named
+// industrial-trash prop standing at a military tent is skipped at attach. A big flat plane (a ground
+// quad or a parachute sheet that would draw as a bright square) is dropped per mesh.
+[BepInPlugin(PluginGuid, "Focus Loot Outline", "1.0.2")]
 public class Plugin : BasePlugin
 {
     public const string PluginGuid = "com.ivmakk.tlsa.focuslootoutline";
@@ -120,6 +122,14 @@ public class Plugin : BasePlugin
     // True while focus mode is active, so a container registered mid-focus can be lit immediately.
     internal static bool FocusActive;
 
+    // The player actor, captured at focus start from the FocusController. Used only by the path-status
+    // diagnostic to measure a navmesh route from the player to a reachability-gated prop.
+    internal static PlayerActor Player;
+    // The player's interaction ProximitySensor, captured at focus start. Supplies the layer masks and
+    // ray origin the game's own loot-prompt line-of-sight test uses, so the ring diagnostic below can
+    // run the same ray. Null until the first focus press.
+    internal static ProximitySensor Sensor;
+
     public override void Load()
     {
         Log = base.Log;
@@ -187,6 +197,11 @@ public class Plugin : BasePlugin
         public bool Lit;
         public bool Queued;
 
+        // The rule that keeps this object dark ("collider", "tent"), or null when no rule applies. The
+        // dev overlay labels a dark object with it, so a wrongly skipped prop can be named. The collider
+        // reason is re-evaluated each focus press; the tent reason is set once at attach.
+        public string SkipReason;
+
         // A corpse drives the game's own OutlineController (skinned body included) instead of the
         // manual per-mesh outlines. When UsesController is set, Controller holds it and Outlines is
         // empty.
@@ -232,6 +247,30 @@ public class Plugin : BasePlugin
 
     internal static bool ShouldHighlight(Tracked t)
     {
+        // The game's sensor finds an interactable only through an enabled collider on a sensor layer.
+        // With none enabled, the object never prompts, so it is dark whatever its kind or position.
+        // Re-checked on every focus press, so a collider enabled later lights the object then.
+        EnsureRootName(t);
+        if (!OutlineFilters.KeepsHighlightWhenUndetectable(t.RootName) && !HasDetectableCollider(t, out var cd))
+        {
+            t.SkipReason = "collider";
+            if (Verbose.Value)
+            {
+                // The searched state tells a container the game closed after a search (collider off,
+                // expected) from a decor copy that was never lootable (collider off from the start).
+                string searched = "n/a";
+                try
+                {
+                    if (t.Kind == Kind.Loot && t.Loot != null) searched = t.Loot.IsSearched.ToString();
+                    else if (t.Kind == Kind.Cache && t.Cache != null) searched = (t.Cache.SearchCount > 0).ToString();
+                }
+                catch { searched = "?"; }
+                Log.LogDebug($"[skip-undetectable] '{t.RootName ?? (t.GameObject != null ? t.GameObject.name : "?")}' [{t.Kind}] searched={searched}: {cd}.");
+            }
+            return false;
+        }
+        if (t.SkipReason == "collider") t.SkipReason = null;
+
         switch (t.Kind)
         {
             case Kind.Loot:
@@ -267,6 +306,70 @@ public class Plugin : BasePlugin
         return false;
     }
 
+    // Make sure a tracked object has its render-root name and anchor before the skip rules run: the
+    // exemption list matches on the name, and the dev label needs the anchor. Both are normally set at
+    // attach, but an object skipped before it ever attached has neither, so resolve them here, once.
+    private static void EnsureRootName(Tracked t)
+    {
+        if (t.RootName != null || t.GameObject == null) return;
+        try
+        {
+            var root = FindRenderRoot(t.GameObject);
+            t.RootName = root.name;
+            t.Anchor = root.transform;
+        }
+        catch { }
+    }
+
+    // The game's interaction sensor (ProximitySensor) finds an interactable with an OverlapSphere on
+    // its own layer mask, which returns enabled colliders only. An interactable whose colliders on
+    // those layers are all disabled is never found, so it never prompts and cannot be looted, whatever
+    // its position. That is how a decor copy of a loot prop (the lighting tower on a base) differs from
+    // a lootable copy: same prefab, same components, the search trigger collider switched off. Returns
+    // false only when colliders on a sensor layer exist under the interactable and none is enabled;
+    // no such collider at all reads true (unknown, keep the outline). With no sensor captured yet
+    // (before the first focus press) every layer counts.
+    internal static bool HasDetectableCollider(Tracked t, out string detail)
+    {
+        detail = "";
+        var go = t.GameObject;
+        if (go == null) return true;
+
+        GameObject host = go;
+        try
+        {
+            var it = go.GetComponent<Interactable>();
+            if (it == null) it = go.GetComponentInParent<Interactable>();
+            if (it != null) host = it.gameObject;
+        }
+        catch { }
+
+        try
+        {
+            int mask = Sensor != null ? Sensor.m_LayerMask.value : -1;
+            var cols = host.GetComponentsInChildren<Collider>(true);
+            int total = 0, onLayer = 0, enabled = 0;
+            for (int i = 0; i < cols.Length; i++)
+            {
+                var c = cols[i];
+                if (c == null) continue;
+                total++;
+                var cgo = c.gameObject;
+                if (((mask >> cgo.layer) & 1) == 0) continue;
+                onLayer++;
+                if (c.enabled && cgo.activeInHierarchy) enabled++;
+            }
+            detail = $"colliders={total} onSensorLayer={onLayer} enabled={enabled}";
+            if (onLayer == 0) return true;
+            return enabled > 0;
+        }
+        catch (Exception e)
+        {
+            detail = "read failed: " + e.Message;
+            return true;
+        }
+    }
+
     // An antidote dispenser tracks m_UseCount against m_MaxUses. When the count reaches the max it is
     // used up and no longer prompts, so treat it as depleted. m_MaxUses is an override value; a
     // single-use dispenser is the common case, so fall back to 1 when the override reads non-positive.
@@ -288,6 +391,67 @@ public class Plugin : BasePlugin
         }
     }
 
+    // Capture the player's interaction ProximitySensor at focus start: its layer mask drives the
+    // undetectable-collider gate, and its settings back the verbose diagnostics. Logs the settings the
+    // first time (and whenever the sensor instance changes), verbose only.
+    internal static void CaptureSensor(FocusController fc)
+    {
+        try
+        {
+            InteractionController ic = null;
+            try { ic = fc.GetComponent<InteractionController>(); } catch { }
+            if (ic == null && Player != null) ic = Player.GetComponentInChildren<InteractionController>(true);
+            var s = ic != null ? ic.m_ProximitySensor : null;
+            if (s == null)
+            {
+                Sensor = null;
+                if (Verbose.Value) Log.LogDebug("[sensor] no InteractionController / ProximitySensor found on the player.");
+                return;
+            }
+            bool changed = Sensor == null || Sensor.Pointer != s.Pointer;
+            Sensor = s;
+            if (!changed || !Verbose.Value) return;
+
+            var rc = s.m_Raycast;
+            string ray = rc == null
+                ? "raycast=null"
+                : $"raycast(enabled={rc.Enabled} origin=({rc.Origin.x:F2},{rc.Origin.y:F2},{rc.Origin.z:F2}) mask=0x{rc.LayerMask.value:X})";
+            Log.LogDebug($"[sensor] radius={s.m_Radius:F2} angle={s.m_Angle:F0} angleMinRadius={s.m_AngleMinRadius:F2} forceDetectMinHeight={s.m_ForceDetectMinHeight:F2} mask=0x{s.m_LayerMask.value:X} triggers={s.m_QueryTriggers} {ray} controllerRange={ic.m_InteractionRange:F2}.");
+        }
+        catch (Exception e)
+        {
+            if (Verbose.Value) Log.LogDebug($"[sensor] capture failed: {e.Message}");
+        }
+    }
+
+    // A decor copy of the industrial trash can stands at a military tent, inside a fenced yard the
+    // survivor cannot enter; a lootable copy stands in the open. The can itself is identical in both
+    // (same prefab, search collider enabled, clear sight lines for metres around it), so the tent is
+    // the marker: any collider named "Tent..." within TentRadius of the prop. Checked once at attach,
+    // only for the tent-decor names in OutlineFilters. On a physics error it reads false (outline it).
+    private const float TentRadius = 3f;
+
+    private static bool IsAtTent(GameObject root, out string tentName)
+    {
+        tentName = null;
+        try
+        {
+            var cols = Physics.OverlapSphere(root.transform.position, TentRadius, -1, QueryTriggerInteraction.Ignore);
+            for (int i = 0; i < cols.Length; i++)
+            {
+                var c = cols[i];
+                if (c == null) continue;
+                string n = c.name;
+                if (OutlineFilters.IsTentMarker(n)) { tentName = n; return true; }
+            }
+        }
+        catch (Exception e)
+        {
+            if (Verbose.Value) Log.LogDebug($"[tent] '{root.name}': overlap failed: {e.Message}");
+        }
+        return false;
+    }
+
     // Add an OutlineRenderer to each mesh under the container and wire it to the shared category.
     // Runs once per container. The renderer wiring is set defensively because the interop metadata
     // does not reveal what OutlineRenderer.Awake does.
@@ -306,16 +470,30 @@ public class Plugin : BasePlugin
 
         RefreshCategory();
 
-        var root = FindRenderRoot(go);
-        t.RootName = root.name;
-        t.Anchor = root.transform;
-
-        // Skip props that register as searchable but never prompt the player (a scripted light rig).
-        // They are false positives, so leave them unlit.
-        if (OutlineFilters.IsExcludedProp(root.name))
+        // ShouldHighlight already resolves the render root (EnsureRootName) before an object is queued,
+        // so reuse it instead of walking the hierarchy a second time. Fall back to a fresh lookup only
+        // when it was not set (an object attached without a prior ShouldHighlight, or a failed lookup).
+        GameObject root;
+        if (t.Anchor != null)
         {
-            if (Verbose.Value) Log.LogDebug($"[skip-prop] '{go.name}' root '{root.name}' is excluded.");
-            // Null the outline list so SetGlow hits its null-guard and Lit stays false: an excluded
+            root = t.Anchor.gameObject;
+        }
+        else
+        {
+            root = FindRenderRoot(go);
+            t.RootName = root.name;
+            t.Anchor = root.transform;
+        }
+
+        // The industrial trash can the game reuses as both loot and camp decor shares one name, so the
+        // name cannot tell the two apart. The decor copy stands at or inside a military tent, in a
+        // fenced yard the survivor cannot enter, so a tent next to the can marks it. (The lighting
+        // tower's decor copy has its search collider disabled instead; ShouldHighlight catches that.)
+        if (OutlineFilters.IsTentDecorProp(root.name) && IsAtTent(root, out var tent))
+        {
+            if (Verbose.Value) Log.LogDebug($"[skip-tent] '{go.name}' root '{root.name}': tent '{tent}' within {TentRadius:F0}m.");
+            t.SkipReason = "tent";
+            // Null the outline list so SetGlow hits its null-guard and Lit stays false: a skipped
             // prop draws nothing, so it must not appear as lit in the Verbose focus snapshot.
             t.Outlines = null;
             return;
@@ -588,6 +766,12 @@ public class Plugin : BasePlugin
     {
         if (t.Lit == on) return;
 
+        // Diagnostic: on the dark->lit transition, log the game's own "can this be interacted with"
+        // verdict for this object, to gather which highlighted objects currently pass or fail a
+        // condition. Condition state only (locked, depleted, needs an item); it does not encode
+        // physical reachability. Verbose only; logged once per object per focus session.
+        if (on && Verbose.Value) LogInteractQuery(t);
+
         if (t.UsesController)
         {
             if (t.Controller != null)
@@ -609,6 +793,43 @@ public class Plugin : BasePlugin
             catch (Exception e) { if (Verbose.Value) Log.LogWarning($"[glow] SetState failed: {e.Message}"); }
         }
         t.Lit = on;
+    }
+
+    // Log Interactable.CanBeInteractedWith() for a tracked object: whether the game currently allows
+    // interaction, and if not, which condition failed. Gathers metadata to decide later whether this
+    // verdict is a useful highlight filter. It reports condition state, not reachability, so a walled-off
+    // container still reads interactable=True. Resolves the Interactable off the tracked GameObject.
+    private static void LogInteractQuery(Tracked t)
+    {
+        if (t.GameObject == null) return;
+
+        Interactable it;
+        try
+        {
+            it = t.GameObject.GetComponent<Interactable>();
+            if (it == null) it = t.GameObject.GetComponentInParent<Interactable>();
+        }
+        catch { it = null; }
+
+        if (it == null)
+        {
+            Log.LogDebug($"[caninteract] '{t.RootName}' [{t.Kind}]: no Interactable component.");
+            return;
+        }
+
+        try
+        {
+            var qr = it.CanBeInteractedWith();
+            string cond = "none";
+            var fc = qr.FailedCondition;
+            if (fc != null) { try { cond = fc.ToString(); } catch { cond = "?"; } }
+            bool det = HasDetectableCollider(t, out var cd);
+            Log.LogDebug($"[caninteract] '{t.RootName}' [{t.Kind}]: interactable={qr.IsInteractable} enabled={it.IsInteractionEnabled} range={it.InteractionRange:F1} failed={cond} detectable={det} ({cd}).");
+        }
+        catch (Exception e)
+        {
+            Log.LogDebug($"[caninteract] '{t.RootName}' [{t.Kind}]: query failed: {e.Message}");
+        }
     }
 
     internal static void HighlightAll(bool on)
@@ -681,8 +902,10 @@ public class Plugin : BasePlugin
         }
     }
 
-    // Dev overlay: label every lit object with its render-root name and kind, so a wrongly
-    // highlighted prop can be named for a filter. Drawn from the ticker's OnGUI, gated on DevLabels.
+    // Dev overlay: label every lit object with its render-root name and kind (yellow), so a wrongly
+    // highlighted prop can be named for a filter, and every object a skip rule keeps dark with that
+    // rule (red), so a wrongly skipped prop can be named too. Drawn from the ticker's OnGUI, gated on
+    // DevLabels.
     internal static void DrawDevLabels()
     {
         if (!FocusActive || DevLabels == null || !DevLabels.Value) return;
@@ -710,6 +933,18 @@ public class Plugin : BasePlugin
             catch { continue; }
             if (sp.z <= 0f) continue; // behind the camera
             GUI.Label(new Rect(sp.x - 4f, Screen.height - sp.y, 460f, 22f), $"{t.RootName} [{t.Kind}]");
+        }
+
+        GUI.color = Color.red;
+        foreach (var pair in Registry)
+        {
+            var t = pair.Value;
+            if (t == null || t.Lit || t.SkipReason == null || t.Anchor == null) continue;
+            Vector3 sp;
+            try { sp = cam.WorldToScreenPoint(t.Anchor.position); }
+            catch { continue; }
+            if (sp.z <= 0f) continue;
+            GUI.Label(new Rect(sp.x - 4f, Screen.height - sp.y, 460f, 22f), $"{t.RootName} [{t.Kind}] dark: {t.SkipReason}");
         }
         GUI.color = prev;
     }
@@ -907,6 +1142,8 @@ public static class FocusStartPatch
     public static void Postfix(FocusController __instance)
     {
         if (Plugin.Verbose.Value) Plugin.Log.LogDebug($"[focus] {Plugin.Now()} StartFocus fired (IsFocusActive={__instance.IsFocusActive}).");
+        try { Plugin.Player = __instance.Actor; } catch { Plugin.Player = null; }
+        Plugin.CaptureSensor(__instance);
         Plugin.HighlightAll(true);
     }
 }

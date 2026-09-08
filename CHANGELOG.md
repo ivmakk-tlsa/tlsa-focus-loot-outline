@@ -4,6 +4,19 @@ All notable changes to this mod are documented here. The format follows [Keep a 
 
 ## [Unreleased]
 
+### Added
+
+- An object the game itself cannot detect is not outlined. The game finds a lootable object through its interaction collider; when that collider is switched off, no loot prompt can ever appear for it. This catches decor copies of loot props, objects placed outside the playable map, and containers the game closes after use.
+- An industrial trash can standing at or inside a military tent is not outlined. Those copies sit in a fenced yard the survivor cannot enter.
+- The `DevLabels` overlay now also labels, in red, every object a skip rule keeps dark, with the rule name, so a wrongly skipped object can be reported.
+
+### Fixed
+
+- Mobile lighting towers placed as unreachable base decor are no longer outlined; towers that hold loot still are. The decor copy is the same prop with its interaction collider switched off, which the new detection rule reads.
+- Industrial trash cans placed inside or at military tents are no longer outlined; lootable copies of the same trash can in the open are outlined again. The 1.0.1 fix excluded that trash can by name, which also hid the lootable copies.
+- A battery-gated antidote dispenser stops being outlined once its antidote is taken. The game switches off its interaction collider at that point, which the new detection rule reads.
+- Objects the map places outside the playable area are no longer outlined.
+
 ## [1.0.1] - 2026-09-05
 
 ### Added

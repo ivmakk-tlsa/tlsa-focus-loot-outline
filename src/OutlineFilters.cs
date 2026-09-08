@@ -22,11 +22,21 @@ internal static class OutlineFilters
     public const float FlatDecalThickness = 0.05f;
     public const float FlatDecalSpan = 1.5f;
 
-    // Specific industrial-trash variants seen only as unreachable camp decor (loose garbage piles),
-    // not the family. The same "Deco-Industrial-Trash" family also has real lootable dumpsters (e.g.
-    // -10), so each decor variant is matched whole: a following digit means a different variant, and
-    // "-1"/"-2" must never match "-10"/"-20". Add a variant here only after confirming it is decor-only.
-    private static readonly string[] ExcludedTrashVariants = { "Deco-Industrial-Trash-1", "Deco-Industrial-Trash-2" };
+    // The industrial-trash prop the game reuses under one name both as reachable loot and as camp decor
+    // at a military tent ("Deco-Industrial-Trash-1"/"-2"). The name alone cannot tell the two apart, so
+    // the game adapter skips a match only when a tent stands next to it. Each name is matched whole: a
+    // digit right after the token means a different variant ("-1" must never catch "-10"), while a
+    // "(Clone)" or " (2)" instance suffix still matches. (The lighting tower's decor copy needs no name
+    // rule: its search collider is disabled, which the game adapter catches for every prop.)
+    private static readonly string[] TentDecorProps = { "Deco-Industrial-Trash-1", "Deco-Industrial-Trash-2" };
+
+    // The tent decor's collider objects are named "Tent1", "Tent2", ... plus an instance suffix.
+    private const string TentPrefix = "Tent";
+
+    // Props that stay highlighted even when their tracked interaction collider is disabled. The player's
+    // mission vehicle keeps its objective collider off between mission steps, but the vehicle itself is
+    // always interactable (refuel, stash, leave), so it must not go dark.
+    private static readonly string[] KeepWhenUndetectable = { "PlayerMissionVehicle" };
 
     // Decorative foliage (ivy, bushes) baked into a container's prefab root - a survivor drop or a
     // wall dispenser sits in a bush - outlines as a jagged spiky cluster. It is matched by name
@@ -45,19 +55,16 @@ internal static class OutlineFilters
     // fire-specific, so a lamp or a light switch is not caught.
     private static readonly string[] FireMarkers = { "firebarrel", "fire-interactable", "Fire-Camp" };
 
-    // A confirmed decor-only trash variant is never outlined. The mobile lighting tower was excluded
-    // here before, but it can hold loot depending on placement, so it highlights again.
-    public static bool IsExcludedProp(string name) => IsExcludedTrashVariant(name);
-
-    // True when the name is one of the decor-only trash variants, matched whole: a digit right after
-    // the variant token means a different variant (so "-2" does not catch "-10"/"-20"), while a
-    // "(Clone)" or " (1)" suffix still matches.
-    private static bool IsExcludedTrashVariant(string name)
+    // True when the name is the trash prop the game reuses as both reachable loot and tent decor. The
+    // game adapter then skips this copy only when a tent stands next to it; the name alone decides
+    // nothing. Matched whole: a digit right after the token means a different variant (so "-1" does
+    // not catch "-10"), while a "(Clone)" or " (2)" suffix still matches.
+    public static bool IsTentDecorProp(string name)
     {
         if (string.IsNullOrEmpty(name)) return false;
-        for (int i = 0; i < ExcludedTrashVariants.Length; i++)
+        for (int i = 0; i < TentDecorProps.Length; i++)
         {
-            var v = ExcludedTrashVariants[i];
+            var v = TentDecorProps[i];
             // Walk every occurrence of the token, not only the first. A first hit that is
             // followed by a digit is a different variant ("-10"), but a later occurrence may
             // still be a valid whole match, so keep scanning past a digit-suffixed hit.
@@ -73,6 +80,14 @@ internal static class OutlineFilters
         }
         return false;
     }
+
+    // True when a collider object's name marks a tent ("Tent1(Clone)"). A tent-decor trash prop with
+    // one of these next to it is the unreachable copy.
+    public static bool IsTentMarker(string name)
+        => !string.IsNullOrEmpty(name) && name.StartsWith(TentPrefix, StringComparison.OrdinalIgnoreCase);
+
+    // True when the render-root name is a prop the undetectable-collider rule must leave alone.
+    public static bool KeepsHighlightWhenUndetectable(string name) => ContainsAny(name, KeepWhenUndetectable);
 
     // Decorative foliage (prefix match) and named junk sub-meshes (fragment match) are never outlined.
     public static bool IsExcludedMesh(string name)
