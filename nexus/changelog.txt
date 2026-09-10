@@ -1,4 +1,11 @@
+v1.0.2 - 2026-09-10
 Added: A smarter check reads the game's own loot signal, so decor copies of loot props and used-up containers stay dark while real loot still glows.
 Fixed: Unreachable base decor no longer glows in focus mode - mobile lighting towers and industrial trash cans placed at military tents. Copies of the same props that hold loot still glow.
 Fixed: A battery antidote dispenser stops glowing once its antidote is taken.
 Fixed: Objects placed outside the playable map no longer glow.
+
+v1.0.1 - 2026-09-05
+Added: Fuel cans now glow in focus mode, red by default to match the game's own explosive-can highlight. The color and an on/off toggle are in the config.
+Fixed: Cleaner rendering of highlighted objects - no more stray spikes, bright squares, or outlines on nearby foliage.
+Fixed: Some unreachable decorations, such as trash piles on military bases, are no longer highlighted.
+Fixed: Mobile lighting towers are highlighted again; they can hold loot depending on placement.
