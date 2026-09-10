@@ -198,9 +198,9 @@ public class Plugin : BasePlugin
     }
 
     // Create the category on first use, then set its active/inactive state from config. The outline
-    // always draws over walls (x-ray, m_DepthTest false): a depth-tested outline leaves a large object
-    // like the player vehicle only partly outlined even in direct view. Strength is shared across both
-    // categories; only the color differs.
+    // always draws over walls (x-ray, m_DepthTest false): a depth-tested outline left a large object
+    // like the player vehicle with no visible outline at all, even in direct view. Strength is shared
+    // across both categories; only the color differs.
     private static OutlineCategory BuildCategory(OutlineCategory cat, Color color, string label)
     {
         if (cat == null)

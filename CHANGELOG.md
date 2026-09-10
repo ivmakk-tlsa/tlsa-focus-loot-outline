@@ -19,7 +19,7 @@ All notable changes to this mod are documented here. The format follows [Keep a 
 ### Removed
 
 - The `FuelRed`/`FuelGreen`/`FuelBlue`/`FuelAlpha` settings. Fuel cans always outline in red now, to match the game's own explosive-can highlight. The `IncludeFuel` toggle still turns the fuel highlight on or off.
-- The `DepthTest` (x-ray) toggle. The outline always draws through walls now. The depth-tested mode left a large object like the player vehicle only partly outlined even in direct view, so it had no good use.
+- The `DepthTest` (x-ray) toggle. The outline always draws through walls now. The depth-tested mode left a large object like the player vehicle with no visible outline at all, even in direct view, so it had no good use.
 
 ### Fixed
 
