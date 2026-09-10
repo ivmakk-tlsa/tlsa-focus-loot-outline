@@ -889,7 +889,7 @@ public class Plugin : BasePlugin
     // rule (red), so a wrongly skipped prop can be named too. Drawn from the ticker's OnGUI, gated on
     // DevLabels.
     // Sizes at 1080p, multiplied by the HUD scale each draw so the labels keep the same apparent size
-    // on a 4K screen. Mirrors CombatText's scale.
+    // on a 4K screen.
     private const int DevLabelBaseFontSize = 14;
     private const float DevLabelBaseWidth = 460f;
     private const float DevLabelBaseHeight = 22f;
@@ -956,8 +956,7 @@ public class Plugin : BasePlugin
 
     // The game's HUD scale: the Canvas.scaleFactor of a UICanvasSetup canvas, which folds the
     // resolution and the user's UI Scale setting. Re-read every two seconds, so a settings change is
-    // picked up without a scene search per draw. Falls back to plain screen-height scaling. Mirrors
-    // CombatText's GameScale.
+    // picked up without a scene search per draw. Falls back to plain screen-height scaling.
     private static float DevHudScale(float now)
     {
         if (now < _devScaleNextRead) return _devScale;
