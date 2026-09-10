@@ -229,6 +229,11 @@ public class Plugin : BasePlugin
 
     internal static bool ShouldHighlight(Tracked t)
     {
+        // A tent skip is permanent: EnsureOutlines sets it once at attach and nulls the outline list,
+        // so the object can never light. Return false here to keep the decision in step with that
+        // drawable state, instead of asking SetGlow to light it every press and hitting the null guard.
+        if (t.SkipReason == "tent") return false;
+
         // The game's sensor finds an interactable only through an enabled collider on a sensor layer.
         // With none enabled, the object never prompts, so it is dark whatever its kind or position.
         // Re-checked on every focus press, so a collider enabled later lights the object then.
@@ -341,7 +346,7 @@ public class Plugin : BasePlugin
                 onLayer++;
                 if (c.enabled && cgo.activeInHierarchy) enabled++;
             }
-            detail = $"colliders={total} onSensorLayer={onLayer} enabled={enabled}";
+            if (Verbose.Value) detail = $"colliders={total} onSensorLayer={onLayer} enabled={enabled}";
             if (onLayer == 0) return true;
             return enabled > 0;
         }
