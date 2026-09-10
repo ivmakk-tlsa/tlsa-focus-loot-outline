@@ -4,7 +4,7 @@ A mod for [*The Last Stand: Aftermath*](https://www.nexusmods.com/thelaststandaf
 
 It uses the game's own outline pipeline (the same one that outlines zombies), so the highlight looks native. Highlighting is event-driven, with no per-frame work: a container lights when it spawns or when focus starts, not on a timer.
 
-Everything is configurable in `BepInEx\config\com.ivmakk.tlsa.focuslootoutline.cfg`: the outline color and glow strength, whether the outline draws through walls (x-ray) or is occluded, an unsearched-only filter, and a per-kind toggle for each highlight group (stashes, caches, gated, tool-gated, pickups, stations, objectives). The config re-reads on the next focus press, so a color edit takes effect without a restart. See [CONFIG.md](CONFIG.md) for every setting, its default, and what it does.
+Everything is configurable in `BepInEx\config\com.ivmakk.tlsa.focuslootoutline.cfg`: the outline color and glow strength, an unsearched-only filter, and a per-kind toggle for each highlight group (stashes, caches, gated, tool-gated, pickups, stations, objectives). Edit the file, then restart the game to apply the change. See [CONFIG.md](CONFIG.md) for every setting, its default, and what it does.
 
 ## Install
 

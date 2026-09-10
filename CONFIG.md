@@ -1,6 +1,6 @@
 # Configuration
 
-Every setting lives in `BepInEx\config\com.ivmakk.tlsa.focuslootoutline.cfg`, written the first time you run the game with the mod installed. Edit it with any text editor. The config re-reads on your next focus press, so a change takes effect without a game restart.
+Every setting lives in `BepInEx\config\com.ivmakk.tlsa.focuslootoutline.cfg`, written the first time you run the game with the mod installed. Edit it with any text editor, then restart the game to apply the change.
 
 ## General
 
