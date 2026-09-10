@@ -9,19 +9,21 @@ namespace FocusLootOutline.Tests;
 // data reads correctly stays an in-game check.
 public class OutlineFiltersTests
 {
-    // --- IsExcludedProp ---------------------------------------------------------------------------
+    // --- IsTentDecorProp --------------------------------------------------------------------------
+    // These variants match on name; the game adapter then skips a match only when a tent stands next
+    // to it. The name matcher's job is only to pick the two shared-name variants and to leave every
+    // other prop alone.
 
     [Theory]
-    // The mobile lighting tower can hold loot depending on placement, so it is NOT excluded.
+    // The lighting tower's decor copy is caught by its disabled search collider, not by name.
     [InlineData("Mobile_lighting_tower", false)]
     [InlineData("Mobile_lighting_tower (2)", false)]
-    [InlineData("mobile_lighting_tower", false)]
-    [InlineData("Deco-Industrial-Trash-1", true)]        // camp decor pile, exact variant
+    [InlineData("Deco-Industrial-Trash-1", true)]        // reused as loot and decor, exact variant
     [InlineData("Deco-Industrial-Trash-1(Clone)", true)] // instanced copy still matches
-    [InlineData("Deco-Industrial-Trash-2", true)]        // camp decor pile, exact variant
+    [InlineData("Deco-Industrial-Trash-2", true)]        // reused as loot and decor, exact variant
     [InlineData("Deco-Industrial-Trash-2(Clone)", true)]
-    // Other variants of the same family are real lootable dumpsters and MUST stay. The digit boundary
-    // keeps "-1"/"-2" from catching "-10"/"-20".
+    // Other variants of the same family are real lootable dumpsters and MUST stay ungated. The digit
+    // boundary keeps "-1"/"-2" from catching "-10"/"-20".
     [InlineData("Deco-Industrial-Trash-10", false)]
     [InlineData("Deco-Industrial-Trash-20", false)]
     // Real deco loot stashes/caches must stay: they share the "deco-" prefix but are lootable.
@@ -31,8 +33,32 @@ public class OutlineFiltersTests
     [InlineData("CacheContainer", false)]
     [InlineData("", false)]
     [InlineData(null, false)]
-    public void IsExcludedProp_matches_decor_false_positives_only(string name, bool expected)
-        => Assert.Equal(expected, OutlineFilters.IsExcludedProp(name));
+    public void IsTentDecorProp_matches_shared_name_trash_variants_only(string name, bool expected)
+        => Assert.Equal(expected, OutlineFilters.IsTentDecorProp(name));
+
+    // --- IsTentMarker -----------------------------------------------------------------------------
+
+    [Theory]
+    [InlineData("Tent1(Clone)", true)]   // the tent decor's collider object, as seen in the game log
+    [InlineData("Tent2", true)]
+    [InlineData("tent1", true)]
+    [InlineData("Intent", false)]        // prefix only, not a fragment
+    [InlineData("WireFence1", false)]
+    [InlineData("", false)]
+    [InlineData(null, false)]
+    public void IsTentMarker_matches_tent_prefix_only(string name, bool expected)
+        => Assert.Equal(expected, OutlineFilters.IsTentMarker(name));
+
+    // --- KeepsHighlightWhenUndetectable -----------------------------------------------------------
+
+    [Theory]
+    [InlineData("PlayerMissionVehicle(Clone)", true)] // the mission car: objective collider off between steps, still interactable
+    [InlineData("Mobile_lighting_tower (1)", false)]  // the decor tower must stay skippable
+    [InlineData("AntiViralDispenser", false)]         // a used dispenser must stay skippable
+    [InlineData("", false)]
+    [InlineData(null, false)]
+    public void KeepsHighlightWhenUndetectable_exempts_mission_vehicle_only(string name, bool expected)
+        => Assert.Equal(expected, OutlineFilters.KeepsHighlightWhenUndetectable(name));
 
     // --- IsExcludedMesh ---------------------------------------------------------------------------
 
@@ -102,4 +128,33 @@ public class OutlineFiltersTests
     [InlineData(5, 2, true)]   // over max
     public void IsRefillDepleted_compares_use_count_to_max(int used, int max, bool expected)
         => Assert.Equal(expected, OutlineFilters.IsRefillDepleted(used, max));
+
+    // --- TryParseHexColor -------------------------------------------------------------------------
+
+    [Theory]
+    [InlineData("#FFD91A", 1f, 0.85098f, 0.10196f, 1f)]    // the default gold, "#" and 6 digits
+    [InlineData("FFD91A", 1f, 0.85098f, 0.10196f, 1f)]     // "#" is optional
+    [InlineData("#ff0000", 1f, 0f, 0f, 1f)]                // lowercase
+    [InlineData("#00000000", 0f, 0f, 0f, 0f)]              // 8 digits, alpha 0
+    [InlineData("#FFFFFF80", 1f, 1f, 1f, 0.50196f)]        // 8 digits, half alpha
+    [InlineData("  #FF0000  ", 1f, 0f, 0f, 1f)]            // surrounding whitespace trimmed
+    public void TryParseHexColor_parses_valid_hex(string s, float r, float g, float b, float a)
+    {
+        Assert.True(OutlineFilters.TryParseHexColor(s, out float pr, out float pg, out float pb, out float pa));
+        Assert.Equal(r, pr, 4);
+        Assert.Equal(g, pg, 4);
+        Assert.Equal(b, pb, 4);
+        Assert.Equal(a, pa, 4);
+    }
+
+    [Theory]
+    [InlineData(null)]
+    [InlineData("")]
+    [InlineData("#FFF")]        // 3-digit shorthand not supported
+    [InlineData("#FFD91")]      // 5 digits
+    [InlineData("#FFD91AFF00")] // 10 digits
+    [InlineData("#GGGGGG")]     // non-hex digit
+    [InlineData("yellow")]      // named color not supported
+    public void TryParseHexColor_rejects_malformed(string s)
+        => Assert.False(OutlineFilters.TryParseHexColor(s, out _, out _, out _, out _));
 }

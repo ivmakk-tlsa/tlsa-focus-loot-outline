@@ -1,3 +1,12 @@
+v1.0.2 - 2026-09-10
+Added: A smarter check reads the game's own loot signal, so decor copies of loot props and used-up containers stay dark while real loot still glows.
+Changed: The outline color is now a single hex value in the config, such as #FFD91A, instead of separate red, green, blue, and alpha numbers. Fuel cans always glow red to match the game.
+Fixed: Some lighting towers glowed in focus mode but held no loot. Those decorative towers no longer glow; towers that hold loot still do.
+Fixed: Some lootable trash cans were not glowing in focus mode. They glow again; trash cans placed as unreachable base decor stay dark.
+Fixed: A battery antidote dispenser stops glowing once its antidote is taken.
+Fixed: Objects placed outside the playable map no longer glow.
+
+v1.0.1 - 2026-09-05
 Added: Fuel cans now glow in focus mode, red by default to match the game's own explosive-can highlight. The color and an on/off toggle are in the config.
 Fixed: Cleaner rendering of highlighted objects - no more stray spikes, bright squares, or outlines on nearby foliage.
 Fixed: Some unreachable decorations, such as trash piles on military bases, are no longer highlighted.

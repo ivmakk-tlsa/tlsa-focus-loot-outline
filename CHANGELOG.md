@@ -4,6 +4,30 @@ All notable changes to this mod are documented here. The format follows [Keep a 
 
 ## [Unreleased]
 
+## [1.0.2] - 2026-09-10
+
+### Added
+
+- An object the game itself cannot detect is not outlined. The game finds a lootable object through its interaction collider; when that collider is switched off, no loot prompt can ever appear for it. This catches decor copies of loot props, objects placed outside the playable map, and containers the game closes after use.
+- An industrial trash can standing at or inside a military tent is not outlined. Those copies sit in a fenced yard the survivor cannot enter.
+- The `DevLabels` overlay now also labels, in red, every object a skip rule keeps dark, with the rule name, so a wrongly skipped object can be reported.
+
+### Changed
+
+- The outline color is now one hex setting (`Color`, for example `#FFD91A`) in place of the separate `Red`, `Green`, `Blue`, and `Alpha` channels.
+
+### Removed
+
+- The `FuelRed`/`FuelGreen`/`FuelBlue`/`FuelAlpha` settings. Fuel cans always outline in red now, to match the game's own explosive-can highlight. The `IncludeFuel` toggle still turns the fuel highlight on or off.
+- The `DepthTest` (x-ray) toggle. The outline always draws through walls now. The depth-tested mode left a large object like the player vehicle with no visible outline at all, even in direct view, so it had no good use.
+
+### Fixed
+
+- Mobile lighting towers placed as unreachable base decor are no longer outlined; towers that hold loot still are. The decor copy is the same prop with its interaction collider switched off, which the new detection rule reads.
+- Industrial trash cans placed inside or at military tents are no longer outlined; lootable copies of the same trash can in the open are outlined again. The 1.0.1 fix excluded that trash can by name, which also hid the lootable copies.
+- A battery-gated antidote dispenser stops being outlined once its antidote is taken. The game switches off its interaction collider at that point, which the new detection rule reads.
+- Objects the map places outside the playable area are no longer outlined.
+
 ## [1.0.1] - 2026-09-05
 
 ### Added
