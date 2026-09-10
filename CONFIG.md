@@ -2,8 +2,6 @@
 
 Every setting lives in `BepInEx\config\com.ivmakk.tlsa.focuslootoutline.cfg`, written the first time you run the game with the mod installed. Edit it with any text editor. The config re-reads on your next focus press, so a change takes effect without a game restart.
 
-Color channels (`Red`, `Green`, `Blue`, `Alpha`, and the `Fuel*` set) run from `0.0` to `1.0`.
-
 ## General
 
 | Setting | Default | Values | What it does |
@@ -13,19 +11,12 @@ Color channels (`Red`, `Green`, `Blue`, `Alpha`, and the `Fuel*` set) run from `
 
 ## Color
 
-The default outline color is a warm yellow-gold. Fuel cans use a separate color, red by default, to match the game's own highlight on the explosive can.
-
 | Setting | Default | Values | What it does |
 |---|---|---|---|
-| `Red` | `1.0` | `0.0` - `1.0` | Red channel of the main outline color. |
-| `Green` | `0.85` | `0.0` - `1.0` | Green channel of the main outline color. |
-| `Blue` | `0.1` | `0.0` - `1.0` | Blue channel of the main outline color. |
-| `Alpha` | `1.0` | `0.0` - `1.0` | Outline opacity. Lower is more see-through. |
+| `Color` | `#FFD91A` | hex `#RRGGBB` or `#RRGGBBAA` | Outline color. The default is a warm yellow-gold. Add two more hex digits for alpha (`#RRGGBBAA`); without them the outline is fully opaque. |
 | `Strength` | `1.0` | any | Glow edge strength. Higher makes the outline edge brighter. |
-| `FuelRed` | `1.0` | `0.0` - `1.0` | Red channel of the fuel-can outline color. |
-| `FuelGreen` | `0.0` | `0.0` - `1.0` | Green channel of the fuel-can outline color. |
-| `FuelBlue` | `0.0` | `0.0` - `1.0` | Blue channel of the fuel-can outline color. |
-| `FuelAlpha` | `1.0` | `0.0` - `1.0` | Fuel-can outline opacity. |
+
+Fuel cans always outline in red, to match the game's own highlight on the explosive can. Turn that highlight on or off with `IncludeFuel` in the Filter section.
 
 ## Visibility
 

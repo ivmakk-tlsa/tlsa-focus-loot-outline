@@ -45,20 +45,10 @@ public class Plugin : BasePlugin
     internal static ConfigEntry<bool> Enabled;
     internal static ConfigEntry<bool> Verbose;
 
-    // Outline color channels and glow strength. Read when the shared category is (re)built, so a
-    // config edit takes effect on the next focus activation without a restart.
-    internal static ConfigEntry<float> Red;
-    internal static ConfigEntry<float> Green;
-    internal static ConfigEntry<float> Blue;
-    internal static ConfigEntry<float> Alpha;
+    // Outline color (hex) and glow strength. Read when the shared category is (re)built, so a config
+    // edit takes effect on the next focus activation without a restart.
+    internal static ConfigEntry<string> ColorHex;
     internal static ConfigEntry<float> Strength;
-
-    // The fuel-can outline color, its own category so a fuel can outlines apart from the shared color.
-    // Default is red, to match the game's own red x-ray highlight on the explosive can.
-    internal static ConfigEntry<float> FuelRed;
-    internal static ConfigEntry<float> FuelGreen;
-    internal static ConfigEntry<float> FuelBlue;
-    internal static ConfigEntry<float> FuelAlpha;
 
     // When false, the outline draws over everything (x-ray), which is easiest to spot. When true,
     // walls occlude it.
@@ -98,13 +88,16 @@ public class Plugin : BasePlugin
     // active, to name a wrongly highlighted prop for a filter. Off by default.
     internal static ConfigEntry<bool> DevLabels;
 
-    private static float Clamp01(float v) => v < 0f ? 0f : (v > 1f ? 1f : v);
+    // The default outline color (#FFD91A), used when the configured hex is malformed.
+    private static readonly Color DefaultOutlineColor = new Color(1f, 0.85f, 0.1f, 1f);
 
     internal static Color OutlineColor =>
-        new Color(Clamp01(Red.Value), Clamp01(Green.Value), Clamp01(Blue.Value), Clamp01(Alpha.Value));
+        OutlineFilters.TryParseHexColor(ColorHex.Value, out float r, out float g, out float b, out float a)
+            ? new Color(r, g, b, a)
+            : DefaultOutlineColor;
 
-    internal static Color FuelColor =>
-        new Color(Clamp01(FuelRed.Value), Clamp01(FuelGreen.Value), Clamp01(FuelBlue.Value), Clamp01(FuelAlpha.Value));
+    // Fuel cans keep the game's own red x-ray highlight, so this color is fixed, not configurable.
+    internal static Color FuelColor => new Color(1f, 0f, 0f, 1f);
 
     // Every tracked container, keyed by native pointer.
     internal static readonly Dictionary<IntPtr, Tracked> Registry = new Dictionary<IntPtr, Tracked>();
@@ -137,16 +130,8 @@ public class Plugin : BasePlugin
         Enabled = Config.Bind("General", "Enabled", true, "Master switch for the focus highlight.");
         Verbose = Config.Bind("General", "Verbose", false, "Verbose diagnostic logging: container registration and outline attachment. Turn on to diagnose a container that does not highlight.");
 
-        Red = Config.Bind("Color", "Red", 1f, new ConfigDescription("Outline red channel.", new AcceptableValueRange<float>(0f, 1f)));
-        Green = Config.Bind("Color", "Green", 0.85f, new ConfigDescription("Outline green channel.", new AcceptableValueRange<float>(0f, 1f)));
-        Blue = Config.Bind("Color", "Blue", 0.1f, new ConfigDescription("Outline blue channel.", new AcceptableValueRange<float>(0f, 1f)));
-        Alpha = Config.Bind("Color", "Alpha", 1f, new ConfigDescription("Outline alpha.", new AcceptableValueRange<float>(0f, 1f)));
+        ColorHex = Config.Bind("Color", "Color", "#FFD91A", "Outline color as hex, #RRGGBB or #RRGGBBAA for alpha. Default is a yellow-gold.");
         Strength = Config.Bind("Color", "Strength", 1f, "Outline fresnel strength.");
-
-        FuelRed = Config.Bind("Color", "FuelRed", 1f, new ConfigDescription("Fuel-can outline red channel. Default red, to match the game's own explosive-can highlight.", new AcceptableValueRange<float>(0f, 1f)));
-        FuelGreen = Config.Bind("Color", "FuelGreen", 0f, new ConfigDescription("Fuel-can outline green channel.", new AcceptableValueRange<float>(0f, 1f)));
-        FuelBlue = Config.Bind("Color", "FuelBlue", 0f, new ConfigDescription("Fuel-can outline blue channel.", new AcceptableValueRange<float>(0f, 1f)));
-        FuelAlpha = Config.Bind("Color", "FuelAlpha", 1f, new ConfigDescription("Fuel-can outline alpha.", new AcceptableValueRange<float>(0f, 1f)));
 
         DepthTest = Config.Bind("Visibility", "DepthTest", false, "false draws the outline over walls (x-ray); true lets walls occlude it.");
         OnlyUnsearched = Config.Bind("Filter", "OnlyUnsearched", true, "Highlight only containers that are not yet searched or depleted.");

@@ -120,6 +120,25 @@ internal static class OutlineFilters
         return useCount >= max;
     }
 
+    // Parse a hex color ("#RRGGBB" or "#RRGGBBAA"; the "#" is optional) into 0..1 channels. Alpha
+    // defaults to fully opaque for the 6-digit form. Returns false for any malformed input, so the
+    // caller can fall back to its default color.
+    public static bool TryParseHexColor(string s, out float r, out float g, out float b, out float a)
+    {
+        r = 0f; g = 0f; b = 0f; a = 1f;
+        if (string.IsNullOrEmpty(s)) return false;
+        s = s.Trim();
+        if (s.Length > 0 && s[0] == '#') s = s.Substring(1);
+        if (s.Length != 6 && s.Length != 8) return false;
+        if (!TryHexByte(s, 0, out int ri)) return false;
+        if (!TryHexByte(s, 2, out int gi)) return false;
+        if (!TryHexByte(s, 4, out int bi)) return false;
+        int ai = 255;
+        if (s.Length == 8 && !TryHexByte(s, 6, out ai)) return false;
+        r = ri / 255f; g = gi / 255f; b = bi / 255f; a = ai / 255f;
+        return true;
+    }
+
     private static bool ContainsAny(string name, string[] fragments)
     {
         if (string.IsNullOrEmpty(name)) return false;
@@ -130,4 +149,22 @@ internal static class OutlineFilters
 
     private static float Min3(float a, float b, float c) => Math.Min(a, Math.Min(b, c));
     private static float Max3(float a, float b, float c) => Math.Max(a, Math.Max(b, c));
+
+    private static bool TryHexByte(string s, int i, out int value)
+    {
+        value = 0;
+        int hi = HexDigit(s[i]);
+        int lo = HexDigit(s[i + 1]);
+        if (hi < 0 || lo < 0) return false;
+        value = hi * 16 + lo;
+        return true;
+    }
+
+    private static int HexDigit(char c)
+    {
+        if (c >= '0' && c <= '9') return c - '0';
+        if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+        if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+        return -1;
+    }
 }

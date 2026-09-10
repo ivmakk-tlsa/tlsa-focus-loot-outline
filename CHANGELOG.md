@@ -12,6 +12,14 @@ All notable changes to this mod are documented here. The format follows [Keep a 
 - An industrial trash can standing at or inside a military tent is not outlined. Those copies sit in a fenced yard the survivor cannot enter.
 - The `DevLabels` overlay now also labels, in red, every object a skip rule keeps dark, with the rule name, so a wrongly skipped object can be reported.
 
+### Changed
+
+- The outline color is now one hex setting (`Color`, for example `#FFD91A`) in place of the separate `Red`, `Green`, `Blue`, and `Alpha` channels.
+
+### Removed
+
+- The `FuelRed`/`FuelGreen`/`FuelBlue`/`FuelAlpha` settings. Fuel cans always outline in red now, to match the game's own explosive-can highlight. The `IncludeFuel` toggle still turns the fuel highlight on or off.
+
 ### Fixed
 
 - Mobile lighting towers placed as unreachable base decor are no longer outlined; towers that hold loot still are. The decor copy is the same prop with its interaction collider switched off, which the new detection rule reads.
