@@ -4,6 +4,8 @@ All notable changes to this mod are documented here. The format follows [Keep a 
 
 ## [Unreleased]
 
+## [1.0.2] - 2026-09-10
+
 ### Added
 
 - An object the game itself cannot detect is not outlined. The game finds a lootable object through its interaction collider; when that collider is switched off, no loot prompt can ever appear for it. This catches decor copies of loot props, objects placed outside the playable map, and containers the game closes after use.
