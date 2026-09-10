@@ -1,6 +1,6 @@
 v1.0.2 - 2026-09-10
 Added: A smarter check reads the game's own loot signal, so decor copies of loot props and used-up containers stay dark while real loot still glows.
-Fixed: Unreachable base decor no longer glows in focus mode - mobile lighting towers and industrial trash cans placed at military tents. Copies of the same props that hold loot still glow.
+Fixed: Some objects glowed in focus mode but never showed a loot prompt, such as lighting towers and trash cans placed as unreachable base decor. These no longer glow, while objects you can loot still do.
 Fixed: A battery antidote dispenser stops glowing once its antidote is taken.
 Fixed: Objects placed outside the playable map no longer glow.
 
