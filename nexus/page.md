@@ -1,10 +1,10 @@
 # Nexus page
 
-Tracks the mod's Nexus page details. Fill the id and URL after the page is created (phase 5).
+Tracks the mod's Nexus page details.
 
 - Mod name: Focus Loot Outline
-- Mod id: TBD
-- URL: TBD
+- Mod id: 9
+- URL: https://www.nexusmods.com/thelaststandaftermath/mods/9
 - Domain: thelaststandaftermath
 - Category: Miscellaneous (or User Interface)
 - Short description: see `short-description.txt` (a one-line hook; the only text shown on the mods-list grid).
