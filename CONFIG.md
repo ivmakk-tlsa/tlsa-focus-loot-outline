@@ -18,12 +18,6 @@ Every setting lives in `BepInEx\config\com.ivmakk.tlsa.focuslootoutline.cfg`, wr
 
 Fuel cans always outline in red, to match the game's own highlight on the explosive can. Turn that highlight on or off with `IncludeFuel` in the Filter section.
 
-## Visibility
-
-| Setting | Default | Values | What it does |
-|---|---|---|---|
-| `XRay` | `true` | `true` / `false` | `true` draws the outline through walls (see-through). `false` lets walls hide the outline. |
-
 ## Filter
 
 `OnlyUnsearched` controls which containers light up. The `Include*` toggles turn each group of highlights on or off.
