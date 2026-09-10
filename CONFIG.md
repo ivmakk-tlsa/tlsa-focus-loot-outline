@@ -22,7 +22,7 @@ Fuel cans always outline in red, to match the game's own highlight on the explos
 
 | Setting | Default | Values | What it does |
 |---|---|---|---|
-| `DepthTest` | `false` | `true` / `false` | `false` draws the outline through walls (x-ray). `true` lets walls hide the outline. |
+| `XRay` | `true` | `true` / `false` | `true` draws the outline through walls (see-through). `false` lets walls hide the outline. |
 
 ## Filter
 

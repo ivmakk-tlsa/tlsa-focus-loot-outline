@@ -1,6 +1,7 @@
 v1.0.2 - 2026-09-10
 Added: A smarter check reads the game's own loot signal, so decor copies of loot props and used-up containers stay dark while real loot still glows.
 Changed: The outline color is now a single hex value in the config, such as #FFD91A, instead of separate red, green, blue, and alpha numbers. Fuel cans always glow red to match the game.
+Changed: The see-through-walls setting is renamed XRay and is on by default.
 Fixed: Some lighting towers glowed in focus mode but held no loot. Those decorative towers no longer glow; towers that hold loot still do.
 Fixed: Some lootable trash cans were not glowing in focus mode. They glow again; trash cans placed as unreachable base decor stay dark.
 Fixed: A battery antidote dispenser stops glowing once its antidote is taken.

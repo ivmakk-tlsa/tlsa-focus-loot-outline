@@ -15,6 +15,7 @@ All notable changes to this mod are documented here. The format follows [Keep a 
 ### Changed
 
 - The outline color is now one hex setting (`Color`, for example `#FFD91A`) in place of the separate `Red`, `Green`, `Blue`, and `Alpha` channels.
+- The `DepthTest` setting is renamed `XRay`, with its sense un-inverted. `XRay = true` (the default) draws the outline through walls; `false` lets walls hide it.
 
 ### Removed
 

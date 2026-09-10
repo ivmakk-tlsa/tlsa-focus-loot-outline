@@ -50,9 +50,9 @@ public class Plugin : BasePlugin
     internal static ConfigEntry<string> ColorHex;
     internal static ConfigEntry<float> Strength;
 
-    // When false, the outline draws over everything (x-ray), which is easiest to spot. When true,
+    // When true, the outline draws over everything (x-ray), which is easiest to spot. When false,
     // walls occlude it.
-    internal static ConfigEntry<bool> DepthTest;
+    internal static ConfigEntry<bool> XRay;
 
     // Skip containers already searched/depleted.
     internal static ConfigEntry<bool> OnlyUnsearched;
@@ -133,7 +133,7 @@ public class Plugin : BasePlugin
         ColorHex = Config.Bind("Color", "Color", "#FFD91A", "Outline color as hex, #RRGGBB or #RRGGBBAA for alpha. Default is a yellow-gold.");
         Strength = Config.Bind("Color", "Strength", 1f, "Outline fresnel strength.");
 
-        DepthTest = Config.Bind("Visibility", "DepthTest", false, "false draws the outline over walls (x-ray); true lets walls occlude it.");
+        XRay = Config.Bind("Visibility", "XRay", true, "Draw the outline over walls (see-through). Turn off to let walls hide the outline.");
         OnlyUnsearched = Config.Bind("Filter", "OnlyUnsearched", true, "Highlight only containers that are not yet searched or depleted.");
         IncludeStashes = Config.Bind("Filter", "IncludeStashes", true, "Highlight sector stashes.");
         IncludeCaches = Config.Bind("Filter", "IncludeCaches", true, "Highlight supply caches.");
@@ -202,7 +202,7 @@ public class Plugin : BasePlugin
         FuelCategory = BuildCategory(FuelCategory, FuelColor, "fuel");
     }
 
-    // Create the category on first use, then set its active/inactive state from config. DepthTest and
+    // Create the category on first use, then set its active/inactive state from config. XRay and
     // Strength are shared across both categories; only the color differs.
     private static OutlineCategory BuildCategory(OutlineCategory cat, Color color, string label)
     {
@@ -216,14 +216,14 @@ public class Plugin : BasePlugin
 
         var active = cat.m_Active;
         active.m_Enabled = true;
-        active.m_DepthTest = DepthTest.Value;
+        active.m_DepthTest = !XRay.Value;
         active.m_Color = color;
         active.m_ColorblindColor = color;
         active.m_FresnelStrength = Strength.Value;
 
         var inactive = cat.m_Inactive;
         inactive.m_Enabled = false;
-        inactive.m_DepthTest = DepthTest.Value;
+        inactive.m_DepthTest = !XRay.Value;
         inactive.m_Color = color;
         inactive.m_ColorblindColor = color;
         inactive.m_FresnelStrength = 0f;
