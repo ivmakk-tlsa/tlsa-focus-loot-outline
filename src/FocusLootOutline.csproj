@@ -8,11 +8,13 @@
   </PropertyGroup>
 
   <!-- FocusController's base type (DataBinderBehaviour) lives in DeadReckoned.Tlsa.
-       UnityEngine.IMGUIModule provides GUI for the dev-label overlay.
+       UnityEngine.IMGUIModule provides GUI and GUIStyle for the dev-label overlay.
+       UnityEngine.UIModule provides Canvas, read for the game's HUD scale factor (dev labels).
        UnityEngine.PhysicsModule provides Collider and Physics.OverlapSphere, for the collider and tent gates. -->
   <ItemGroup>
     <Reference Include="DeadReckoned.Tlsa"><HintPath>$(BepInExInterop)\DeadReckoned.Tlsa.dll</HintPath><Private>false</Private></Reference>
     <Reference Include="UnityEngine.IMGUIModule"><HintPath>$(BepInExInterop)\UnityEngine.IMGUIModule.dll</HintPath><Private>false</Private></Reference>
+    <Reference Include="UnityEngine.UIModule"><HintPath>$(BepInExInterop)\UnityEngine.UIModule.dll</HintPath><Private>false</Private></Reference>
     <Reference Include="UnityEngine.PhysicsModule"><HintPath>$(BepInExInterop)\UnityEngine.PhysicsModule.dll</HintPath><Private>false</Private></Reference>
   </ItemGroup>
 

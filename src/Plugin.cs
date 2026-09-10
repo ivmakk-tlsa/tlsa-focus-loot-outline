@@ -888,6 +888,19 @@ public class Plugin : BasePlugin
     // highlighted prop can be named for a filter, and every object a skip rule keeps dark with that
     // rule (red), so a wrongly skipped prop can be named too. Drawn from the ticker's OnGUI, gated on
     // DevLabels.
+    // Sizes at 1080p, multiplied by the HUD scale each draw so the labels keep the same apparent size
+    // on a 4K screen. Mirrors CombatText's scale.
+    private const int DevLabelBaseFontSize = 14;
+    private const float DevLabelBaseWidth = 460f;
+    private const float DevLabelBaseHeight = 22f;
+    private const float DevLabelReferenceHeight = 1080f;
+
+    private static GUIStyle _devLabelStyle;
+    private static int _devLabelFontSize = -1;
+    private static float _devScale = 1f;
+    private static float _devScaleNextRead = -1f;
+    private static bool _devScaleWarned;
+
     internal static void DrawDevLabels()
     {
         if (!FocusActive || DevLabels == null || !DevLabels.Value) return;
@@ -900,8 +913,19 @@ public class Plugin : BasePlugin
         }
         if (cam == null) return;
 
-        var prev = GUI.color;
-        GUI.color = Color.yellow;
+        float scale = DevHudScale(Time.realtimeSinceStartup);
+        int fontSize = Mathf.Max(1, Mathf.RoundToInt(DevLabelBaseFontSize * scale));
+        if (_devLabelStyle == null) _devLabelStyle = new GUIStyle(GUI.skin.label);
+        if (fontSize != _devLabelFontSize)
+        {
+            _devLabelStyle.fontSize = fontSize;
+            _devLabelFontSize = fontSize;
+        }
+        float w = DevLabelBaseWidth * scale;
+        float h = DevLabelBaseHeight * scale;
+        float xoff = 4f * scale;
+
+        _devLabelStyle.normal.textColor = Color.yellow;
         foreach (var pair in Registry)
         {
             var t = pair.Value;
@@ -914,10 +938,10 @@ public class Plugin : BasePlugin
             try { sp = cam.WorldToScreenPoint(t.Anchor.position); }
             catch { continue; }
             if (sp.z <= 0f) continue; // behind the camera
-            GUI.Label(new Rect(sp.x - 4f, Screen.height - sp.y, 460f, 22f), $"{t.RootName} [{t.Kind}]");
+            GUI.Label(new Rect(sp.x - xoff, Screen.height - sp.y, w, h), $"{t.RootName} [{t.Kind}]", _devLabelStyle);
         }
 
-        GUI.color = Color.red;
+        _devLabelStyle.normal.textColor = Color.red;
         foreach (var pair in Registry)
         {
             var t = pair.Value;
@@ -926,9 +950,43 @@ public class Plugin : BasePlugin
             try { sp = cam.WorldToScreenPoint(t.Anchor.position); }
             catch { continue; }
             if (sp.z <= 0f) continue;
-            GUI.Label(new Rect(sp.x - 4f, Screen.height - sp.y, 460f, 22f), $"{t.RootName} [{t.Kind}] dark: {t.SkipReason}");
+            GUI.Label(new Rect(sp.x - xoff, Screen.height - sp.y, w, h), $"{t.RootName} [{t.Kind}] dark: {t.SkipReason}", _devLabelStyle);
         }
-        GUI.color = prev;
+    }
+
+    // The game's HUD scale: the Canvas.scaleFactor of a UICanvasSetup canvas, which folds the
+    // resolution and the user's UI Scale setting. Re-read every two seconds, so a settings change is
+    // picked up without a scene search per draw. Falls back to plain screen-height scaling. Mirrors
+    // CombatText's GameScale.
+    private static float DevHudScale(float now)
+    {
+        if (now < _devScaleNextRead) return _devScale;
+        _devScaleNextRead = now + 2f;
+
+        float fallback = Screen.height / DevLabelReferenceHeight;
+        float found = 0f;
+        try
+        {
+            var setups = UnityEngine.Object.FindObjectsOfType<global::UI.UICanvasSetup>();
+            for (int i = 0; i < setups.Length; i++)
+            {
+                var setup = setups[i];
+                if (setup == null || setup.m_IgnoreUserScaleSetting) continue;
+                var canvas = setup.GetComponent<Canvas>();
+                if (canvas != null && canvas.scaleFactor > 0f) { found = canvas.scaleFactor; break; }
+            }
+        }
+        catch (Exception e)
+        {
+            if (Verbose.Value && !_devScaleWarned)
+            {
+                _devScaleWarned = true;
+                Log.LogWarning($"[devlabels] HUD scale read failed (logged once): {e.Message}");
+            }
+        }
+
+        _devScale = found > 0f ? found : fallback;
+        return _devScale;
     }
 }
 
