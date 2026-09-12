@@ -54,6 +54,7 @@ public class Plugin : BasePlugin
     // edit takes effect on the next focus activation without a restart.
     internal static ConfigEntry<string> ColorHex;
     internal static ConfigEntry<float> Strength;
+    internal static ConfigEntry<float> FocusSaturation;
 
     // Skip containers already searched/depleted.
     internal static ConfigEntry<bool> OnlyUnsearched;
@@ -72,7 +73,7 @@ public class Plugin : BasePlugin
     // Loose loot and pickups.
     internal static ConfigEntry<bool> IncludePickups;
 
-    // Carryable fuel cans, outlined in the Fuel color (red by default).
+    // Carryable fuel cans, outlined in the game's own fuel color (green).
     internal static ConfigEntry<bool> IncludeFuel;
 
     // Crafting and utility stations (workbench, merchant, supply store, upgrades, shrine).
@@ -102,16 +103,17 @@ public class Plugin : BasePlugin
     // active, to name a wrongly highlighted prop for a filter. Off by default.
     internal static ConfigEntry<bool> DevLabels;
 
-    // The default outline color (#FFD91A), used when the configured hex is malformed.
-    private static readonly Color DefaultOutlineColor = new Color(1f, 0.85f, 0.1f, 1f);
+    // The default outline color (#F9E37E, a pale warm gold), used when the configured hex is malformed.
+    private static readonly Color DefaultOutlineColor = new Color(0.975f, 0.891f, 0.493f, 1f);
 
     internal static Color OutlineColor =>
         OutlineFilters.TryParseHexColor(ColorHex.Value, out float r, out float g, out float b, out float a)
             ? new Color(r, g, b, a)
             : DefaultOutlineColor;
 
-    // Fuel cans keep the game's own red x-ray highlight, so this color is fixed, not configurable.
-    internal static Color FuelColor => new Color(1f, 0f, 0f, 1f);
+    // Fuel cans outline in a saturated green, near the game's own fuel-pickup hue but more saturated so
+    // it reads clearly apart from the near-white loot color. X-ray like the rest of the mod's highlights.
+    internal static Color FuelColor => new Color(0.10f, 0.80f, 0.05f, 1f);
 
     // The danger color (#FF2020 default), used when the configured hex is malformed too.
     private static readonly Color DefaultDangerColor = new Color(1f, 0.125f, 0.125f, 1f);
@@ -130,8 +132,7 @@ public class Plugin : BasePlugin
     // Shared outline category all container outlines reference. Built lazily on first use.
     internal static OutlineCategory Category;
 
-    // The fuel-can outline category (red by default), so a fuel can outlines apart from the shared
-    // color. Built alongside Category.
+    // The fuel-can outline category (the game's own green). Built alongside Category.
     internal static OutlineCategory FuelCategory;
 
     // The danger outline category (red by default). Built alongside Category.
@@ -160,6 +161,12 @@ public class Plugin : BasePlugin
     // run the same ray. Null until the first focus press.
     internal static ProximitySensor Sensor;
 
+    // The focus-mode color post effect, captured at focus start. Focus desaturates the whole screen (to
+    // about 0.3), which washes outline colors toward white. The mod raises that saturation back to a
+    // floor while focus is held, so highlight colors stay readable, then lets the game restore its own
+    // value on focus end.
+    internal static Game.Effects.PostEffects.Controllers.ColorizorPostFxController Colorizor;
+
     public override void Load()
     {
         Log = base.Log;
@@ -167,8 +174,9 @@ public class Plugin : BasePlugin
         Enabled = Config.Bind("General", "Enabled", true, "Master switch for the focus highlight.");
         Verbose = Config.Bind("General", "Verbose", false, "Verbose diagnostic logging: container registration and outline attachment. Turn on to diagnose a container that does not highlight.");
 
-        ColorHex = Config.Bind("Color", "Color", "#FFD91A", "Outline color as hex, #RRGGBB or #RRGGBBAA for alpha. Default is a yellow-gold.");
+        ColorHex = Config.Bind("Color", "Color", "#F9E37E", "Outline color as hex, #RRGGBB or #RRGGBBAA for alpha. Default is a pale warm gold.");
         Strength = Config.Bind("Color", "Strength", 1f, "Outline fresnel strength.");
+        FocusSaturation = Config.Bind("Color", "FocusSaturation", 0.55f, "Least screen color saturation while focus is active. Focus mode desaturates the whole screen (to about 0.3), which washes outline colors toward white; this raises it back so highlight colors stay readable. 1 is full color; lower toward 0.3 restores the game's desaturated focus look. Applies to the whole screen while focus is held.");
 
         OnlyUnsearched = Config.Bind("Filter", "OnlyUnsearched", true, "Highlight only containers that are not yet searched or depleted.");
         IncludeStashes = Config.Bind("Filter", "IncludeStashes", true, "Highlight sector stashes.");
@@ -176,7 +184,7 @@ public class Plugin : BasePlugin
         IncludeGated = Config.Bind("Filter", "IncludeGated", true, "Highlight battery/item-gated interactables (antidote dispensers, containers that need a battery).");
         IncludeToolGated = Config.Bind("Filter", "IncludeToolGated", true, "Highlight tool-gated interactables (need a tool to unlock).");
         IncludePickups = Config.Bind("Filter", "IncludePickups", true, "Highlight loose loot and pickups (ground items, survivor drops, tool rewards).");
-        IncludeFuel = Config.Bind("Filter", "IncludeFuel", true, "Highlight carryable fuel cans, in the Fuel color (red by default, matching the game's own explosive-can highlight).");
+        IncludeFuel = Config.Bind("Filter", "IncludeFuel", true, "Highlight carryable fuel cans. A fuel can keeps the game's own outline color (green).");
         IncludeStations = Config.Bind("Filter", "IncludeStations", true, "Highlight crafting and utility stations (workbench, merchant, supply store, upgrades, shrine).");
         IncludeObjectives = Config.Bind("Filter", "IncludeObjectives", true, "Highlight objectives and misc (power generator, books, XP interactions).");
         IncludeDanger = Config.Bind("Filter", "IncludeDanger", true, "Highlight danger objects in the Danger color while focus is active: burning ground, acid and infection puddles, gas tanks that can explode, traps, and a placed box mine with a ring at its blast radius.");
@@ -486,6 +494,52 @@ public class Plugin : BasePlugin
         {
             if (Verbose.Value) Log.LogDebug($"[sensor] capture failed: {e.Message}");
         }
+    }
+
+    // Capture the focus-mode color post effect at focus start, so ApplyFocusSaturation can raise its
+    // saturation each frame while focus is held.
+    internal static void CaptureColorizor()
+    {
+        _satLogged = false;
+        try
+        {
+            var pfx = UnityEngine.Object.FindObjectOfType<Game.Effects.PostEffects.Controllers.GameCameraPostFx>();
+            Colorizor = pfx != null ? pfx.m_Colorizor : null;
+            if (Verbose.Value && Colorizor == null) Log.LogDebug("[postfx] no Colorizor controller found at focus start.");
+        }
+        catch (Exception e)
+        {
+            Colorizor = null;
+            if (Verbose.Value) Log.LogDebug($"[postfx] capture failed: {e.Message}");
+        }
+    }
+
+    // Raise the focus-mode screen saturation back up to the configured floor while focus is held. Focus
+    // desaturates the whole screen (a colorizor mixer drops saturation to about 0.3), which washes the
+    // outline colors toward white. Any mixer below the floor is lifted to it; a neutral mixer (1.0) is
+    // left alone. Called each frame from the Ticker while focus is active. The game restores its own
+    // saturation on focus end, so nothing needs restoring here. Whole-screen, only during focus.
+    private static bool _satLogged;
+    internal static void ApplyFocusSaturation()
+    {
+        if (!FocusActive || Colorizor == null) return;
+        float floor = FocusSaturation.Value;
+        try
+        {
+            var mixers = Colorizor.m_Mixers;
+            int n = mixers != null ? mixers.Count : 0;
+            for (int i = 0; i < n; i++)
+            {
+                var mx = mixers[i];
+                if (mx == null || mx.Saturation >= floor) continue;
+                if (Verbose.Value && !_satLogged) { _satLogged = true; Log.LogDebug($"[postfx] raising focus saturation {mx.Saturation:F3} -> {floor:F3}."); }
+                mx.Saturation = floor;
+                mx.m_SaturationStart = floor;
+                mx.m_SaturationTarget = floor;
+                mx.m_SaturationT = 1f;
+            }
+        }
+        catch { }
     }
 
     // A decor copy of the industrial trash can stands at a military tent, inside a fenced yard the
@@ -1240,6 +1294,17 @@ public class Plugin : BasePlugin
         if (state.Label == null) return;
 
         var go = c.gameObject;
+
+        // A lit interactive fire station (campfire, fire barrel) spawns a fire AreaOfEffect that burns
+        // the player, so it scans as a danger and would get a red ring. But it is an interactable the
+        // player uses on purpose, not a hazard to avoid, so skip the danger there. The map's standalone
+        // fire spots (FireSpotSmall-Loop) do not sit under a fire-station name, so they still light.
+        if (c.TryCast<AreaOfEffect>() != null && IsUnderFireStation(go))
+        {
+            if (Verbose.Value) Log.LogDebug($"[danger] skip fire AOE under fire station '{go.name}'.");
+            return;
+        }
+
         if (!Registry.TryGetValue(c.Pointer, out var t))
         {
             var root = FindHazardRoot(go);
@@ -1491,6 +1556,18 @@ public class Plugin : BasePlugin
     private const int MaxPropAssemblyRenderers = 12;
 
     // The parent chain of an object with each node's renderer count, for the verbose log.
+    // True when the object sits under an interactive fire station (a campfire or fire barrel), by name.
+    // Used to skip the danger ring on a fire the player lights and uses, not a hazard to avoid.
+    private static bool IsUnderFireStation(GameObject go)
+    {
+        var t = go.transform;
+        for (int depth = 0; t != null && depth < 6; depth++, t = t.parent)
+        {
+            if (OutlineFilters.NameMarksFire(t.name)) return true;
+        }
+        return false;
+    }
+
     private static string AncestorChain(GameObject go)
     {
         var parts = new List<string>();
@@ -1740,10 +1817,10 @@ public static class InteractableAwakePatch
             layers.Add(Plugin.Kind.Gated);
         if (go.GetComponent<ToolRequirementInteraction>() != null)
             layers.Add(Plugin.Kind.ToolGated);
-        // A carryable fuel can (CarryInteraction) is its own kind, outlined red to match the game's
-        // own red x-ray highlight on the explosive can. Checked before Pickup so a can routes to the
-        // Fuel (red) category, not the shared Pickup color. This assumes CarryInteraction marks the
-        // fuel can; if another carryable prop shares the component, it would also outline red.
+        // A carryable fuel can (CarryInteraction) is its own kind, outlined in the game's own fuel
+        // color (green) rather than the shared Pickup color. Checked before Pickup. This assumes
+        // CarryInteraction marks the fuel can; if another carryable prop shares the component, it
+        // would also be treated as fuel.
         if (go.GetComponent<CarryInteraction>() != null)
             layers.Add(Plugin.Kind.Fuel);
         if (go.GetComponent<PickupItem>() != null
@@ -1829,6 +1906,7 @@ public static class FocusStartPatch
         if (Plugin.Verbose.Value) Plugin.Log.LogDebug($"[focus] {Plugin.Now()} StartFocus fired (IsFocusActive={__instance.IsFocusActive}).");
         try { Plugin.Player = __instance.Actor; } catch { Plugin.Player = null; }
         Plugin.CaptureSensor(__instance);
+        Plugin.CaptureColorizor();
         Plugin.HighlightAll(true);
     }
 }
@@ -1881,6 +1959,7 @@ public class Ticker : MonoBehaviour
     {
         Plugin.DrainAttachQueue();
         Plugin.TickHazards();
+        Plugin.ApplyFocusSaturation();
     }
 
     public void OnGUI()
