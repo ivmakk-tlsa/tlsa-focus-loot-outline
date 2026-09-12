@@ -6,9 +6,14 @@ using BepInEx.Logging;
 using BepInEx.Unity.IL2CPP;
 using Game.Actors;
 using Game.Actors.Helpers;
+using Game.Data.Models.StatusEffects;
+using Game.Effects.Explosions;
+using Game.Logic.Combat;
+using Game.Logic.Combat.AoeHandlers;
 using Game.Logic.Controllers;
 using Game.Logic.Interaction;
 using Game.Logic.Sensors;
+using Game.Logic.Traps;
 using Game.Maps.Markup;
 using Game.Props;
 using Game.Rendering;
@@ -36,7 +41,7 @@ namespace FocusLootOutline;
 // sensor cannot detect (its search collider disabled) is skipped for every kind, and a named
 // industrial-trash prop standing at a military tent is skipped at attach. A big flat plane (a ground
 // quad or a parachute sheet that would draw as a bright square) is dropped per mesh.
-[BepInPlugin(PluginGuid, "Focus Loot Outline", "1.0.2")]
+[BepInPlugin(PluginGuid, "Focus Loot Outline", "1.1.0")]
 public class Plugin : BasePlugin
 {
     public const string PluginGuid = "com.ivmakk.tlsa.focuslootoutline";
@@ -76,6 +81,19 @@ public class Plugin : BasePlugin
     // Objectives and misc (power generator, books, XP interactions).
     internal static ConfigEntry<bool> IncludeObjectives;
 
+    // Danger objects (burning ground, acid/infection puddles, gas tanks, traps, a placed box mine),
+    // outlined in the Danger color. Found by a scene scan on each focus press, not by registration.
+    internal static ConfigEntry<bool> IncludeDanger;
+    internal static ConfigEntry<string> DangerColorHex;
+
+    // The ring drawn around a hazard with no mesh (the map's fire spots) and around a placed mine:
+    // wall height, the smallest radius, and its own glow strength (the outline fills the wall's
+    // whole silhouette, so the ring wants a weaker glow than a prop).
+    internal static ConfigEntry<float> RingHeight;
+    internal static ConfigEntry<float> RingWidth;
+    internal static ConfigEntry<float> RingMinRadius;
+    internal static ConfigEntry<float> RingStrength;
+
     // How many containers attach their outlines per frame after focus starts. Spreads the one-time
     // attach work over several frames so the first focus press does not stutter.
     internal static ConfigEntry<int> AttachPerFrame;
@@ -95,6 +113,14 @@ public class Plugin : BasePlugin
     // Fuel cans keep the game's own red x-ray highlight, so this color is fixed, not configurable.
     internal static Color FuelColor => new Color(1f, 0f, 0f, 1f);
 
+    // The danger color (#FF2020 default), used when the configured hex is malformed too.
+    private static readonly Color DefaultDangerColor = new Color(1f, 0.125f, 0.125f, 1f);
+
+    internal static Color DangerColor =>
+        OutlineFilters.TryParseHexColor(DangerColorHex.Value, out float r, out float g, out float b, out float a)
+            ? new Color(r, g, b, a)
+            : DefaultDangerColor;
+
     // Every tracked container, keyed by native pointer.
     internal static readonly Dictionary<IntPtr, Tracked> Registry = new Dictionary<IntPtr, Tracked>();
 
@@ -107,6 +133,21 @@ public class Plugin : BasePlugin
     // The fuel-can outline category (red by default), so a fuel can outlines apart from the shared
     // color. Built alongside Category.
     internal static OutlineCategory FuelCategory;
+
+    // The danger outline category (red by default). Built alongside Category.
+    internal static OutlineCategory DangerCategory;
+
+    // The danger ring's category: the danger color at the ring's own strength.
+    internal static OutlineCategory RingCategory;
+
+    // Pointers of the OutlineRenderers that belong to a danger hazard. The SetState patch keeps these
+    // Active against the game's aim-outline system, which deactivates a shared aim target's outline
+    // (the M60 turret) after the mod's LateUpdate. Membership is O(1) in the hot patch path.
+    internal static readonly HashSet<IntPtr> DangerOutlinePtrs = new HashSet<IntPtr>();
+
+    // Set true while the mod itself drives an OutlineRenderer state, so the SetState patch lets the
+    // mod's own deactivation through (turning a hazard dark) and only overrides external calls.
+    internal static bool ModDrivingOutline;
 
     // True while focus mode is active, so a container registered mid-focus can be lit immediately.
     internal static bool FocusActive;
@@ -138,6 +179,12 @@ public class Plugin : BasePlugin
         IncludeFuel = Config.Bind("Filter", "IncludeFuel", true, "Highlight carryable fuel cans, in the Fuel color (red by default, matching the game's own explosive-can highlight).");
         IncludeStations = Config.Bind("Filter", "IncludeStations", true, "Highlight crafting and utility stations (workbench, merchant, supply store, upgrades, shrine).");
         IncludeObjectives = Config.Bind("Filter", "IncludeObjectives", true, "Highlight objectives and misc (power generator, books, XP interactions).");
+        IncludeDanger = Config.Bind("Filter", "IncludeDanger", true, "Highlight danger objects in the Danger color while focus is active: burning ground, acid and infection puddles, gas tanks that can explode, traps, and a placed box mine with a ring at its blast radius.");
+        DangerColorHex = Config.Bind("Color", "DangerColor", "#FF2020", "Outline color for danger objects as hex, #RRGGBB or #RRGGBBAA for alpha. Default is red.");
+        RingHeight = Config.Bind("Danger", "RingHeight", 0f, new ConfigDescription("Height in metres of the ring drawn around a hazard that has no mesh of its own (a burning ground spot) and around a placed box mine. 0 draws a flat band on the ground, like a puddle; above 0 draws a wall of that height (tall reads as a solid tube). Applies to rings built after the change (next scene load).", new AcceptableValueRange<float>(0f, 1f)));
+        RingWidth = Config.Bind("Danger", "RingWidth", 3f, new ConfigDescription("Width in metres of the flat band (when RingHeight is 0). At or above the radius the band becomes a filled disc, like a puddle (the default); smaller draws a hollow ring. Applies to rings built after the change.", new AcceptableValueRange<float>(0.02f, 3f)));
+        RingMinRadius = Config.Bind("Danger", "RingMinRadius", DangerRules.DefaultMinRingRadius, new ConfigDescription("Smallest ring radius in metres. A burning spot's damage collider is smaller than its flames, so the ring is floored to this. Applies to rings built after the change.", new AcceptableValueRange<float>(0.25f, 3f)));
+        RingStrength = Config.Bind("Danger", "RingStrength", 0.35f, new ConfigDescription("Glow strength of the ring, separate from Strength. Lower is a fainter, thinner line. Applies on the next focus press.", new AcceptableValueRange<float>(0f, 5f)));
         AttachPerFrame = Config.Bind("Performance", "AttachPerFrame", 4, new ConfigDescription("How many containers attach outlines per frame after focus starts. Lower is smoother but takes longer to fully light.", new AcceptableValueRange<int>(1, 32)));
         DevLabels = Config.Bind("Diagnostics", "DevLabels", false, "Dev overlay: while focus is active, draw each highlighted object's render-root name and kind on screen, so a wrongly highlighted prop can be named. Local diagnostic; keep off in normal play.");
 
@@ -152,7 +199,7 @@ public class Plugin : BasePlugin
         Log.LogInfo("Focus Loot Outline loaded.");
     }
 
-    internal enum Kind { Loot, Stash, Cache, Gated, ToolGated, Pickup, Station, Objective, Fuel }
+    internal enum Kind { Loot, Stash, Cache, Gated, ToolGated, Pickup, Station, Objective, Fuel, Danger }
 
     // A registered container. Holds the typed reference for its state checks, the GameObject to
     // outline, and the outline renderers once attached.
@@ -187,6 +234,22 @@ public class Plugin : BasePlugin
         // empty.
         public OutlineController Controller;
         public bool UsesController;
+
+        // Danger only. Hazard is the scanned component (AreaOfEffect, FireAreaCollider, GasVolume,
+        // Tripwire, GunWeaponTrap, NoiseTrap, BoxMine); null for a TrapDisarm interactable, which
+        // registers through the Interactable patch like any other kind. HazardLabel names it for the
+        // dev label and the log ("acid", "fire", "mine", ...). HazardRadius and HazardEffect are the
+        // values seen at the last scan, so a pooled explosion reused with a different puddle is
+        // detected and re-attached. Ring is the mod-built blast ring (mine only).
+        public Component Hazard;
+        public string HazardLabel;
+        // An AreaOfEffect hazard draws only the disc at its collider radius. Its prefab's meshes are
+        // debris (a burster's gibs) or a switched-off variant, never the hazard's footprint, so they
+        // are not outlined.
+        public bool AreaOnly;
+        public float HazardRadius;
+        public string HazardEffect;
+        public GameObject Ring;
     }
 
     // Build or refresh the outline categories from config so a live color edit is honored. The shared
@@ -195,13 +258,19 @@ public class Plugin : BasePlugin
     {
         Category = BuildCategory(Category, OutlineColor, "shared");
         FuelCategory = BuildCategory(FuelCategory, FuelColor, "fuel");
+        DangerCategory = BuildCategory(DangerCategory, DangerColor, "danger");
+        RingCategory = BuildCategory(RingCategory, DangerColor, "ring", RingStrength.Value);
     }
+
+    // The category an object's outlines reference, by kind.
+    private static OutlineCategory CategoryFor(Kind kind) =>
+        kind == Kind.Fuel ? FuelCategory : kind == Kind.Danger ? DangerCategory : Category;
 
     // Create the category on first use, then set its active/inactive state from config. The outline
     // always draws over walls (x-ray, m_DepthTest false): a depth-tested outline left a large object
     // like the player vehicle with no visible outline at all, even in direct view. Strength is shared
     // across both categories; only the color differs.
-    private static OutlineCategory BuildCategory(OutlineCategory cat, Color color, string label)
+    private static OutlineCategory BuildCategory(OutlineCategory cat, Color color, string label, float? strength = null)
     {
         if (cat == null)
         {
@@ -216,7 +285,7 @@ public class Plugin : BasePlugin
         active.m_DepthTest = false;
         active.m_Color = color;
         active.m_ColorblindColor = color;
-        active.m_FresnelStrength = Strength.Value;
+        active.m_FresnelStrength = strength ?? Strength.Value;
 
         var inactive = cat.m_Inactive;
         inactive.m_Enabled = false;
@@ -233,6 +302,11 @@ public class Plugin : BasePlugin
         // so the object can never light. Return false here to keep the decision in step with that
         // drawable state, instead of asking SetGlow to light it every press and hitting the null guard.
         if (t.SkipReason == "tent") return false;
+
+        // A scanned hazard is not an interactable: it has no sensor collider to test, and its state
+        // (a puddle expired, a mine detonated, a tank exploded) is re-read from the component here.
+        if (t.Kind == Kind.Danger && t.Hazard != null)
+            return IncludeDanger.Value && IsHazardLive(t);
 
         // The game's sensor finds an interactable only through an enabled collider on a sensor layer.
         // With none enabled, the object never prompts, so it is dark whatever its kind or position.
@@ -289,6 +363,9 @@ public class Plugin : BasePlugin
                 return IncludeStations.Value;
             case Kind.Objective:
                 return IncludeObjectives.Value;
+            case Kind.Danger:
+                // A TrapDisarm interactable (no scanned Hazard); the collider gate above applies.
+                return IncludeDanger.Value;
         }
         return false;
     }
@@ -492,6 +569,14 @@ public class Plugin : BasePlugin
         // zombies. Use it when present; otherwise fall through to the manual outlines.
         if (TrySetupCorpseController(t, root, go)) return;
 
+        // An area hazard is its collider radius on the ground: draw the disc there and nothing else.
+        if (t.Kind == Kind.Danger && t.AreaOnly)
+        {
+            AttachRing(t, root, DangerRules.RingRadius(t.HazardRadius, RingMinRadius.Value));
+            if (Verbose.Value) Log.LogDebug($"[attach] {Now()} '{go.name}' kind=Danger:{t.HazardLabel}: area disc only, no mesh outlines under '{root.name}'.");
+            return;
+        }
+
         Il2CppInterop.Runtime.InteropTypes.Arrays.Il2CppArrayBase<Renderer> renderers;
         try
         {
@@ -528,10 +613,29 @@ public class Plugin : BasePlugin
 
             // Skip a big flat plane (a ground quad, a decal, a parachute sheet). Some containers
             // carry one, and with x-ray on it draws as a bright square that swamps the loot. A loot
-            // mesh is never both this thin in one axis and this wide in another.
-            if (IsBigFlatPlane(r))
+            // mesh is never both this thin in one axis and this wide in another. A danger hazard is
+            // the exception: a puddle's ground quad is the very thing to outline, so it keeps it.
+            if (t.Kind != Kind.Danger && IsBigFlatPlane(r))
             {
                 if (Verbose.Value) Log.LogDebug($"[skip-flat] '{go.name}' mesh '{r.gameObject.name}'.");
+                continue;
+            }
+
+            // A hazard prefab can carry a switched-off variant mesh (the fire spot's unused gas can).
+            // An outline on an inactive object draws nothing, and counting it would hide that the
+            // hazard has no visible mesh and needs the ring instead.
+            if (t.Kind == Kind.Danger && !r.gameObject.activeInHierarchy)
+            {
+                if (Verbose.Value) Log.LogDebug($"[skip-inactive] '{go.name}' mesh '{r.gameObject.name}'.");
+                continue;
+            }
+
+            // A trap prop can bundle an effect billboard (the M60's "Flare" muzzle glow) that
+            // outlines as a floating flat rectangle. Skip it on danger props only, so a flare-gun or
+            // road-flare loot mesh with a similar name is untouched.
+            if (t.Kind == Kind.Danger && r.gameObject.name.IndexOf("Flare", StringComparison.OrdinalIgnoreCase) >= 0)
+            {
+                if (Verbose.Value) Log.LogDebug($"[skip-flare] '{go.name}' mesh '{r.gameObject.name}'.");
                 continue;
             }
 
@@ -550,7 +654,7 @@ public class Plugin : BasePlugin
             {
                 var existing = r.gameObject.GetComponent<OutlineRenderer>();
                 var or = existing != null ? existing : r.gameObject.AddComponent<OutlineRenderer>();
-                or.Category = t.Kind == Kind.Fuel ? FuelCategory : Category;
+                or.Category = CategoryFor(t.Kind);
                 or.m_Renderer = r;
                 if (smr != null)
                 {
@@ -562,7 +666,7 @@ public class Plugin : BasePlugin
                     if (mf != null) or.m_MeshFilter = mf;
                 }
                 or.m_AllowRender = true;
-                or.SetState(OutlineState.Inactive, true);
+                ModSetState(or, OutlineState.Inactive);
                 try { or.UpdateRenderFunction(); } catch { }
                 t.Outlines.Add(or);
                 made++;
@@ -573,8 +677,15 @@ public class Plugin : BasePlugin
             }
         }
 
+        // A placed box mine also gets a ring at its blast radius, so the player sees how far the
+        // blast reaches, not only the box. A hazard with no mesh at all (the map's fire spots are
+        // particles over an inactive gas-can mesh) gets a ring at its collider radius instead, or it
+        // would never show.
+        if (t.Kind == Kind.Danger && (t.HazardLabel == "mine" || made == 0))
+            AttachRing(t, root, t.HazardLabel == "mine" ? t.HazardRadius : DangerRules.RingRadius(t.HazardRadius, RingMinRadius.Value));
+
         if (Verbose.Value)
-            Log.LogDebug($"[attach] {Now()} '{go.name}' kind={t.Kind}: {made} outline(s) from {renderers.Length} renderer(s) under '{root.name}'.");
+            Log.LogDebug($"[attach] {Now()} '{go.name}' kind={t.Kind}{(t.HazardLabel != null ? ":" + t.HazardLabel : "")}: {made} outline(s) from {renderers.Length} renderer(s) under '{root.name}'.");
     }
 
     // Read the renderer's world bounds and hand the flat-plane test to the game-free OutlineFilters
@@ -749,6 +860,16 @@ public class Plugin : BasePlugin
         }
     }
 
+    // Drive an OutlineRenderer's state as the mod (not the game), so the SetState patch does not
+    // override this call. Used for every state change the mod makes on a danger outline.
+    internal static void ModSetState(OutlineRenderer or, OutlineState state)
+    {
+        ModDrivingOutline = true;
+        try { or.SetState(state, true); }
+        catch { }
+        finally { ModDrivingOutline = false; }
+    }
+
     internal static void SetGlow(Tracked t, bool on)
     {
         if (t.Lit == on) return;
@@ -776,10 +897,32 @@ public class Plugin : BasePlugin
         {
             var or = t.Outlines[i];
             if (or == null) continue;
-            try { or.SetState(state, true); }
+            try { ModSetState(or, state); }
             catch (Exception e) { if (Verbose.Value) Log.LogWarning($"[glow] SetState failed: {e.Message}"); }
+            // Keep the danger-outline set in step with the lit state, so the SetState patch protects
+            // only outlines that should be lit now (a dead or expired hazard, turned off here, is
+            // dropped so the aim system's Inactive is no longer overridden back to Active).
+            if (t.Kind == Kind.Danger)
+            {
+                try { if (on) DangerOutlinePtrs.Add(or.Pointer); else DangerOutlinePtrs.Remove(or.Pointer); }
+                catch { }
+            }
         }
         t.Lit = on;
+
+        // Ring diagnostic: the outline's own view of the mod-built ring once lit, to tell a ring the
+        // outline system rejected (no mesh, not visible, will not render) from one it draws unseen.
+        if (on && Verbose.Value && t.Ring != null)
+        {
+            try
+            {
+                var or = t.Outlines[t.Outlines.Count - 1];
+                var mr = t.Ring.GetComponent<MeshRenderer>();
+                int vc = -1; try { var m = or.Mesh; if (m != null) vc = m.vertexCount; } catch { }
+                Log.LogDebug($"[danger] ring lit '{t.RootName}': willRender={or.WillRender} state={or.State} allow={or.m_AllowRender} meshVerts={vc} rendererEnabled={mr.enabled} isVisible={mr.isVisible} layer={t.Ring.layer} active={t.Ring.activeInHierarchy} cat={(or.Category != null ? or.Category.name : "null")}.");
+            }
+            catch (Exception e) { Log.LogDebug($"[danger] ring lit diagnostic failed: {e.Message}"); }
+        }
     }
 
     // Log Interactable.CanBeInteractedWith() for a tracked object: whether the game currently allows
@@ -839,20 +982,17 @@ public class Plugin : BasePlugin
         // Light already-attached containers now (cheap); queue the rest for the ticker to attach a
         // few per frame, so the first focus press does not stutter.
         RefreshCategory();
+        ScanHazards();
         int litNow = 0, queued = 0;
         var dead = new List<IntPtr>();
         foreach (var pair in Registry)
         {
             var t = pair.Value;
             if (t.GameObject == null) { dead.Add(pair.Key); continue; }
-            if (ShouldHighlight(t))
+            switch (Refresh(t))
             {
-                if (t.AttachTried) { SetGlow(t, true); litNow++; }
-                else if (!t.Queued) { t.Queued = true; PendingAttach.Enqueue(t); queued++; }
-            }
-            else if (t.Lit)
-            {
-                SetGlow(t, false);
+                case 1: litNow++; break;
+                case 2: queued++; break;
             }
         }
         for (int i = 0; i < dead.Count; i++) Registry.Remove(dead[i]);
@@ -866,10 +1006,25 @@ public class Plugin : BasePlugin
             foreach (var pair in Registry)
             {
                 var tt = pair.Value;
-                if (tt.Lit && tt.RootName != null) lit.Add($"{tt.RootName}[{tt.Kind}]");
+                if (tt.Lit && tt.RootName != null) lit.Add($"{tt.RootName}[{KindLabel(tt)}]");
             }
             Log.LogDebug($"[focus] {Now()} ENTER registry={Registry.Count} litNow={litNow} queued={queued} lit=[{string.Join(", ", lit)}].");
         }
+    }
+
+    // Bring one tracked object in step with its highlight decision: light it if attached, queue the
+    // attach if not, or turn it off. Returns 1 when lit now, 2 when queued, 0 otherwise. Shared by the
+    // focus press and the hazard rescan so both apply the same rule.
+    private static int Refresh(Tracked t)
+    {
+        if (ShouldHighlight(t))
+        {
+            if (t.AttachTried) { SetGlow(t, true); return 1; }
+            if (!t.Queued) { t.Queued = true; PendingAttach.Enqueue(t); return 2; }
+            return 0;
+        }
+        if (t.Lit) SetGlow(t, false);
+        return 0;
     }
 
     // Attach outlines for a few queued containers per frame, then light them. Called by the ticker.
@@ -943,7 +1098,10 @@ public class Plugin : BasePlugin
             try { sp = cam.WorldToScreenPoint(t.Anchor.position); }
             catch { continue; }
             if (sp.z <= 0f) continue; // behind the camera
-            GUI.Label(new Rect(sp.x - xoff, Screen.height - sp.y, w, h), $"{t.RootName} [{t.Kind}]", _devLabelStyle);
+            // A danger label is red with its hazard label, so a hazard reads apart from loot.
+            bool danger = t.Kind == Kind.Danger;
+            _devLabelStyle.normal.textColor = danger ? Color.red : Color.yellow;
+            GUI.Label(new Rect(sp.x - xoff, Screen.height - sp.y, w, h), $"{t.RootName} [{KindLabel(t)}]", _devLabelStyle);
         }
 
         _devLabelStyle.normal.textColor = Color.red;
@@ -955,9 +1113,13 @@ public class Plugin : BasePlugin
             try { sp = cam.WorldToScreenPoint(t.Anchor.position); }
             catch { continue; }
             if (sp.z <= 0f) continue;
-            GUI.Label(new Rect(sp.x - xoff, Screen.height - sp.y, w, h), $"{t.RootName} [{t.Kind}] dark: {t.SkipReason}", _devLabelStyle);
+            GUI.Label(new Rect(sp.x - xoff, Screen.height - sp.y, w, h), $"{t.RootName} [{KindLabel(t)}] dark: {t.SkipReason}", _devLabelStyle);
         }
     }
+
+    // The kind as shown in labels and the focus snapshot: "Danger:acid" for a hazard, the kind alone otherwise.
+    internal static string KindLabel(Tracked t) =>
+        t.Kind == Kind.Danger && t.HazardLabel != null ? $"{t.Kind}:{t.HazardLabel}" : t.Kind.ToString();
 
     // The game's HUD scale: the Canvas.scaleFactor of a UICanvasSetup canvas, which folds the
     // resolution and the user's UI Scale setting. Re-read every two seconds, so a settings change is
@@ -991,6 +1153,479 @@ public class Plugin : BasePlugin
 
         _devScale = found > 0f ? found : fallback;
         return _devScale;
+    }
+
+    // --- Danger hazards ----------------------------------------------------------------------------
+    //
+    // Hazards are not interactables, so no Awake patch sees them, and the ones that matter most (the
+    // puddles) live on pooled Explosion objects whose OnEnable fires on every reuse. So instead of
+    // lifecycle patches, the hazards are found by a scene scan on each focus press, and again every
+    // HazardRescanFrames while focus is held so a puddle that lands mid-focus still lights. Hazards are
+    // few and short-lived, so the scan is cheap at that rate.
+
+    private const int HazardRescanFrames = 30;
+    private static int _hazardNextScanFrame;
+
+    // Rescan while focus is active, on the ticker's frame. Only new or changed hazards do any work.
+    internal static void TickHazards()
+    {
+        if (!FocusActive || !Enabled.Value || !IncludeDanger.Value) return;
+        if (Time.frameCount < _hazardNextScanFrame) return;
+        _hazardNextScanFrame = Time.frameCount + HazardRescanFrames;
+
+        ScanHazards();
+        var dead = new List<IntPtr>();
+        foreach (var pair in Registry)
+        {
+            var t = pair.Value;
+            if (t.Kind != Kind.Danger || t.Hazard == null) continue;
+            if (t.GameObject == null) { dead.Add(pair.Key); continue; }
+            Refresh(t);
+        }
+        for (int i = 0; i < dead.Count; i++) Registry.Remove(dead[i]);
+    }
+
+    // Find every hazard component in the scene and register it, re-reading state on one already
+    // tracked. FindObjectsOfType returns active objects only, so a pooled explosion parked inactive is
+    // not seen, and one reused for a different puddle is caught by the radius/effect change.
+    internal static void ScanHazards()
+    {
+        if (!IncludeDanger.Value) return;
+        _hazardNextScanFrame = Time.frameCount + HazardRescanFrames;
+        try
+        {
+            // FireAreaCollider is deliberately not scanned: its OnTriggerStay (decompiled) only burns
+            // down a PoisonAreaCollider it touches, so it never hurts the player; the burning corpse
+            // and the fire glob carry one, and the player's fire damage comes from the AreaOfEffect.
+            ScanKind<AreaOfEffect>();
+            ScanKind<GasVolume>();
+            ScanKind<Tripwire>();
+            ScanKind<GunWeaponTrap>();
+            ScanKind<NoiseTrap>();
+            ScanKind<BoxMine>();
+        }
+        catch (Exception e)
+        {
+            Log.LogWarning($"[danger] scan failed: {e.Message}");
+        }
+    }
+
+    private static void ScanKind<T>() where T : Component
+    {
+        Il2CppInterop.Runtime.InteropTypes.Arrays.Il2CppArrayBase<T> found;
+        try { found = UnityEngine.Object.FindObjectsOfType<T>(); }
+        catch (Exception e)
+        {
+            if (Verbose.Value) Log.LogWarning($"[danger] FindObjectsOfType<{typeof(T).Name}> failed: {e.Message}");
+            return;
+        }
+        for (int i = 0; i < found.Length; i++)
+        {
+            var c = found[i];
+            if (c == null) continue;
+            try { Track(c); }
+            catch (Exception e)
+            {
+                if (Verbose.Value) Log.LogWarning($"[danger] track {typeof(T).Name} '{c.name}' failed: {e.Message}");
+            }
+        }
+    }
+
+    // Register or refresh one scanned hazard. The registry key is the component pointer, so a
+    // rescan finds its own entry. A pooled explosion reused with another radius or effect since the
+    // last scan is reset (glow off, outlines and ring dropped) so it re-attaches to the new shape.
+    private static void Track(Component c)
+    {
+        var state = ReadHazard(c);
+        if (state.Label == null) return;
+
+        var go = c.gameObject;
+        if (!Registry.TryGetValue(c.Pointer, out var t))
+        {
+            var root = FindHazardRoot(go);
+            t = new Tracked
+            {
+                Kind = Kind.Danger,
+                GameObject = go,
+                Hazard = c,
+                HazardLabel = state.Label,
+                AreaOnly = c.TryCast<AreaOfEffect>() != null,
+                HazardRadius = state.Radius,
+                HazardEffect = state.Effect,
+                RootName = root.name,
+                Anchor = root.transform,
+            };
+            Registry[c.Pointer] = t;
+            if (Verbose.Value)
+            {
+                Log.LogDebug($"[danger] {Now()} {c.GetIl2CppType().Name} '{go.name}' label={state.Label} effect={state.Effect ?? "-"} radius={state.Radius:F2} duration={state.Duration:F2} active={state.Active} singleFrame={state.SingleFrame} hitsPlayer={state.HitsPlayer} mask=0x{state.Mask:X} live={state.Live} root='{root.name}' comps=[{ComponentNames(go)}].");
+            }
+            return;
+        }
+
+        bool changed = t.HazardEffect != state.Effect || Math.Abs(t.HazardRadius - state.Radius) > 0.01f;
+        if (changed)
+        {
+            if (Verbose.Value) Log.LogDebug($"[danger] '{go.name}' changed: {t.HazardLabel}/{t.HazardRadius:F2} -> {state.Label}/{state.Radius:F2}; re-attaching.");
+            ResetHazard(t);
+            t.HazardLabel = state.Label;
+            t.HazardRadius = state.Radius;
+            t.HazardEffect = state.Effect;
+        }
+    }
+
+    // Drop a hazard's outlines and ring so the next attach starts fresh.
+    private static void ResetHazard(Tracked t)
+    {
+        SetGlow(t, false);
+        t.Outlines = null;
+        t.AttachTried = false;
+        if (t.Ring != null)
+        {
+            try { UnityEngine.Object.Destroy(t.Ring); } catch { }
+            t.Ring = null;
+        }
+    }
+
+    // The plain state of a hazard, read from the component. Label is null when the component is not
+    // a hazard kind this mod knows (never, for the scanned types) so the caller skips it.
+    private struct HazardState
+    {
+        public string Label;
+        public string Effect;
+        public float Radius;
+        public float Duration;
+        public bool Active;
+        public bool SingleFrame;
+        public bool HitsPlayer;
+        public int Mask;
+        public bool Live;
+    }
+
+    private static HazardState ReadHazard(Component c)
+    {
+        var s = new HazardState { Active = true, HitsPlayer = true, Mask = -1 };
+        if (c.gameObject == null || !c.gameObject.activeInHierarchy) s.Active = false;
+
+        var aoe = c.TryCast<AreaOfEffect>();
+        if (aoe != null)
+        {
+            s.Effect = AreaEffectName(aoe);
+            s.Label = DangerRules.EffectLabel(s.Effect);
+            try { s.Radius = aoe.Radius; } catch { }
+            try { s.Duration = aoe.m_Duration; } catch { }
+            try { s.SingleFrame = aoe.m_SingleFrame; } catch { }
+            try { s.Active = s.Active && aoe.IsActive; } catch { }
+            try { s.Mask = aoe.m_LayerMask.value; } catch { }
+            s.HitsPlayer = MaskHitsPlayer(s.Mask);
+            s.Live = DangerRules.ShouldLightArea(s.Active, s.SingleFrame, s.Duration, s.HitsPlayer);
+            return s;
+        }
+        var gas = c.TryCast<GasVolume>();
+        if (gas != null)
+        {
+            // A burster's explosion prefab carries its own GasVolume (the cloud that can ignite),
+            // which would double up the acid area on the same root. Only a standing tank counts.
+            try { if (gas.GetComponentInParent<Explosion>() != null) return s; } catch { }
+            s.Label = "gas";
+            bool exploded = false;
+            try { exploded = gas.m_Exploded; } catch { }
+            s.Live = s.Active && DangerRules.ShouldLightGas(exploded);
+            return s;
+        }
+        var wire = c.TryCast<Tripwire>();
+        if (wire != null)
+        {
+            s.Label = "tripwire";
+            bool tripped = false;
+            try { tripped = wire.mTripped; } catch { }
+            s.Live = s.Active && DangerRules.ShouldLightTrap(tripped);
+            return s;
+        }
+        if (c.TryCast<GunWeaponTrap>() != null)
+        {
+            s.Label = "gun-trap";
+            // The M60 turret is a HercTurretActor (a CharacterActor). A shot-out turret keeps its
+            // GameObject as a wreck, so activeInHierarchy stays true; read the actor's IsDead so a
+            // dead turret goes dark.
+            bool dead = false;
+            bool found = false;
+            try
+            {
+                var actor = c.gameObject.GetComponentInParent<Game.Actors.CharacterActor>();
+                if (actor != null) { found = true; dead = actor.IsDead; }
+            }
+            catch { }
+            if (Verbose.Value) Log.LogDebug($"[danger] gun-trap '{c.gameObject.name}' actor={found} dead={dead}.");
+            s.Live = s.Active && !dead;
+            return s;
+        }
+        if (c.TryCast<NoiseTrap>() != null)
+        {
+            s.Label = "noise-trap";
+            s.Live = s.Active;
+            return s;
+        }
+        var mine = c.TryCast<BoxMine>();
+        if (mine != null)
+        {
+            s.Label = "mine";
+            bool thrown = false;
+            try { thrown = mine.m_Thrown; } catch { }
+            s.Radius = MineBlastRadius(mine);
+            // Only a placed mine is a hazard; the one still in the survivor's hand is not.
+            s.Live = s.Active && thrown;
+            return s;
+        }
+        return s;
+    }
+
+    // Re-read a tracked hazard's live state on a focus press or rescan.
+    private static bool IsHazardLive(Tracked t)
+    {
+        if (t.Hazard == null) return false;
+        try { return ReadHazard(t.Hazard).Live; }
+        catch { return false; }
+    }
+
+    // The name of the status effect an area applies, resolved by reference against the game's own
+    // StatusEffects table ("Acid", "Infection", "Burning", "BurningSmall"); a damage-only area reads
+    // "RadialDamage"; an unknown model falls back to its asset name so the log can name it.
+    private static string AreaEffectName(AreaOfEffect aoe)
+    {
+        StatusEffectHandler h = null;
+        try
+        {
+            h = aoe.GetComponent<StatusEffectHandler>();
+            if (h == null) h = aoe.GetComponentInParent<StatusEffectHandler>();
+            if (h == null) h = aoe.GetComponentInChildren<StatusEffectHandler>(true);
+        }
+        catch { }
+        if (h == null)
+        {
+            bool radial = false;
+            try { radial = aoe.GetComponent<RadialDamageHandler>() != null || aoe.GetComponentInParent<RadialDamageHandler>() != null; } catch { }
+            return radial ? "RadialDamage" : null;
+        }
+
+        StatusEffectModel model = null;
+        try { model = h.m_StatusEffect; } catch { }
+        if (model == null) return null;
+
+        try
+        {
+            if (Same(model, StatusEffects.Acid)) return "Acid";
+            if (Same(model, StatusEffects.Infection)) return "Infection";
+            if (Same(model, StatusEffects.Burning)) return "Burning";
+            if (Same(model, StatusEffects.BurningSmall)) return "BurningSmall";
+        }
+        catch (Exception e)
+        {
+            if (Verbose.Value) Log.LogDebug($"[danger] StatusEffects table read failed: {e.Message}");
+        }
+        try { return model.name; } catch { return "?"; }
+    }
+
+    private static bool Same(StatusEffectModel a, StatusEffectModel b) => a != null && b != null && a.Pointer == b.Pointer;
+
+    // Whether a layer mask includes the player's layer. With no player captured yet, assume it does.
+    private static bool MaskHitsPlayer(int mask)
+    {
+        if (Player == null) return true;
+        int layer;
+        try { layer = Player.gameObject.layer; } catch { return true; }
+        return ((mask >> layer) & 1) != 0;
+    }
+
+    // The blast radius of a placed mine: the Explosion under its prefab, else the fallback constant.
+    private static float MineBlastRadius(BoxMine mine)
+    {
+        try
+        {
+            var ex = mine.GetComponentInChildren<Explosion>(true);
+            if (ex != null)
+            {
+                float r = ex.GetRadius();
+                if (r > 0f) return r;
+            }
+        }
+        catch (Exception e)
+        {
+            if (Verbose.Value) Log.LogDebug($"[danger] mine radius read failed: {e.Message}");
+        }
+        return DangerRules.MineRingFallbackRadius;
+    }
+
+    // The object to gather a hazard's meshes from: the component's own object when it has any, else
+    // the same ancestor walk the interactables use (a puddle's effect meshes may sit on the explosion
+    // parent). FindRenderRoot's first branch needs an Interactable, which a hazard does not have.
+    private static GameObject FindHazardRoot(GameObject go)
+    {
+        try
+        {
+            int c = go.GetComponentsInChildren<Renderer>(true).Length;
+            if (Verbose.Value) Log.LogDebug($"[danger] root chain for '{go.name}': {AncestorChain(go)}.");
+            if (c > 0)
+            {
+                // A trap's component sits on its moving part (the M60 on its mount: the gun node
+                // holds only the barrel mesh, the stand sits several nodes up). Climb to the highest
+                // ancestor that is still one prop assembly (renderer count within the cap), so the
+                // whole turret and its stand light. Stop before a scene-grouping node over the cap.
+                var best = go;
+                var up = go.transform.parent;
+                for (int depth = 0; up != null && depth < 5; depth++, up = up.parent)
+                {
+                    int pc = up.gameObject.GetComponentsInChildren<Renderer>(true).Length;
+                    if (pc > MaxPropAssemblyRenderers) break;
+                    best = up.gameObject;
+                }
+                return best;
+            }
+        }
+        catch { }
+        return FindRenderRoot(go);
+    }
+
+    // The most renderers a parent may hold to count as one prop assembly (a mounted gun and its
+    // stand) rather than a scene grouping node.
+    private const int MaxPropAssemblyRenderers = 12;
+
+    // The parent chain of an object with each node's renderer count, for the verbose log.
+    private static string AncestorChain(GameObject go)
+    {
+        var parts = new List<string>();
+        var t = go.transform;
+        for (int depth = 0; t != null && depth < 5; depth++, t = t.parent)
+        {
+            int n = 0; try { n = t.gameObject.GetComponentsInChildren<Renderer>(true).Length; } catch { }
+            parts.Add($"'{t.name}'({n})");
+        }
+        return string.Join(" < ", parts);
+    }
+
+    // Build a ring for a hazard: a flat band mesh at the given radius on a child object, laid on the
+    // ground under the hazard, outlined through the game's own OutlineRenderer in the danger
+    // category. The MeshRenderer itself must not show: it gets a fully transparent material when a
+    // transparent shader is available (so it still counts as visible to culling and the outline
+    // system), else it stays disabled and the log records whether the outline will still render.
+    private static void AttachRing(Tracked t, GameObject root, float radius)
+    {
+        if (t.Ring != null) return;
+        if (radius <= 0f) radius = DangerRules.MineRingFallbackRadius;
+        try
+        {
+            var ring = new GameObject("DangerRing");
+            ring.transform.SetParent(root.transform, true);
+            ring.transform.position = GroundUnder(root.transform.position) + new Vector3(0f, 0.05f, 0f);
+            ring.transform.rotation = Quaternion.identity;
+            ring.layer = root.layer;
+
+            // Two rings of points joined into quads: either a flat band on the ground (outer and
+            // inner radius, the inner shrunk to a point for a filled disc) or a wall (the same radius
+            // at ground and at RingHeight). Triangles go in both windings so the ring shows whichever
+            // side faces the camera: a one-sided flat band drew nothing in-game.
+            int seg = DangerRules.RingSegments;
+            float height = RingHeight.Value;
+            bool flat = height <= 0.001f;
+            var outer = DangerRules.RingPoints(radius, seg);
+            var inner = flat ? DangerRules.RingPoints(Mathf.Max(radius - RingWidth.Value, 0.01f), seg) : outer;
+            var verts = new Vector3[seg * 2];
+            for (int i = 0; i < seg; i++)
+            {
+                verts[i] = new Vector3(outer[i].x, 0f, outer[i].z);
+                verts[seg + i] = new Vector3(inner[i].x, flat ? 0f : height, inner[i].z);
+            }
+            var oneSide = DangerRules.RingTriangles(seg);
+            var tris = new int[oneSide.Length * 2];
+            for (int i = 0; i < oneSide.Length; i += 3)
+            {
+                tris[i] = oneSide[i]; tris[i + 1] = oneSide[i + 1]; tris[i + 2] = oneSide[i + 2];
+                int j = oneSide.Length + i;
+                tris[j] = oneSide[i]; tris[j + 1] = oneSide[i + 2]; tris[j + 2] = oneSide[i + 1];
+            }
+            var mesh = new Mesh();
+            mesh.vertices = verts;
+            mesh.triangles = tris;
+            mesh.RecalculateNormals();
+            mesh.RecalculateBounds();
+
+            var mf = ring.AddComponent<MeshFilter>();
+            mf.mesh = mesh;
+            var mr = ring.AddComponent<MeshRenderer>();
+            mr.shadowCastingMode = UnityEngine.Rendering.ShadowCastingMode.Off;
+            mr.receiveShadows = false;
+            string draw = "disabled";
+            var shader = FindTransparentShader();
+            if (shader != null)
+            {
+                var mat = new Material(shader);
+                mat.color = new Color(0f, 0f, 0f, 0f);
+                mr.material = mat;
+                mr.enabled = true;
+                draw = "transparent:" + shader.name;
+            }
+            else
+            {
+                mr.enabled = false;
+            }
+
+            var or = ring.AddComponent<OutlineRenderer>();
+            or.Category = RingCategory;
+            or.m_Renderer = mr;
+            or.m_MeshFilter = mf;
+            or.m_AllowRender = true;
+            ModSetState(or, OutlineState.Inactive);
+            try { or.UpdateRenderFunction(); } catch { }
+            t.Outlines.Add(or);
+            t.Ring = ring;
+            if (Verbose.Value)
+            {
+                bool will = false; try { will = or.WillRender; } catch { }
+                var p = ring.transform.position;
+                Log.LogDebug($"[danger] ring for '{root.name}' radius={radius:F2} shape={(flat ? "flat w=" + RingWidth.Value.ToString("F2") : "wall h=" + height.ToString("F2"))} at ({p.x:F1}/{p.y:F1}/{p.z:F1}) draw={draw} willRender={will} ({verts.Length} verts).");
+            }
+        }
+        catch (Exception e)
+        {
+            Log.LogWarning($"[danger] ring build failed on '{root.name}': {e.Message}");
+        }
+    }
+
+    // A shader that can draw fully transparent, so the ring's own renderer shows nothing while it
+    // stays a live renderer. IL2CPP builds strip unused shaders, so each name is tried and the
+    // result cached; null when none survived.
+    private static Shader _transparentShader;
+    private static bool _transparentShaderSearched;
+    private static readonly string[] TransparentShaderNames = { "Sprites/Default", "Unlit/Transparent", "Legacy Shaders/Transparent/Diffuse", "UI/Default" };
+
+    private static Shader FindTransparentShader()
+    {
+        if (_transparentShaderSearched) return _transparentShader;
+        _transparentShaderSearched = true;
+        for (int i = 0; i < TransparentShaderNames.Length; i++)
+        {
+            try
+            {
+                var s = Shader.Find(TransparentShaderNames[i]);
+                if (s != null) { _transparentShader = s; break; }
+            }
+            catch { }
+        }
+        if (Verbose.Value) Log.LogDebug($"[danger] transparent shader: {(_transparentShader != null ? _transparentShader.name : "none found")}.");
+        return _transparentShader;
+    }
+
+    // The ground point under a hazard, so a ring lies on the floor instead of at the hazard's own
+    // pivot (a fire spot's pivot sits well above the ground). Falls back to the pivot itself.
+    private static Vector3 GroundUnder(Vector3 p)
+    {
+        try
+        {
+            if (Physics.Raycast(p + Vector3.up * 0.5f, Vector3.down, out var hit, 5f, -1, QueryTriggerInteraction.Ignore))
+                return hit.point;
+        }
+        catch { }
+        return p;
     }
 }
 
@@ -1076,6 +1711,8 @@ public static class InteractableAwakePatch
         // ShouldHighlight). Absent for other gated kinds.
         if (kind == Plugin.Kind.Gated)
             t.Refill = go.GetComponent<AntiViralRefillInteraction>();
+        if (kind == Plugin.Kind.Danger)
+            t.HazardLabel = "trap-disarm";
         Plugin.Registry[__instance.Pointer] = t;
         if (Plugin.Verbose.Value)
         {
@@ -1123,6 +1760,10 @@ public static class InteractableAwakePatch
             || go.GetComponent<BookInteraction>() != null
             || go.GetComponent<AwardXpInteraction>() != null)
             layers.Add(Plugin.Kind.Objective);
+        // The disarm prompt on a trap. The trap itself (tripwire, gun, noise box) is found by the
+        // hazard scan; this is the interactable the player uses to disarm it.
+        if (go.GetComponent<TrapDisarm>() != null)
+            layers.Add(Plugin.Kind.Danger);
         // An unlit campfire has no interaction handler component (its "light" action is a UnityEvent),
         // so no component above matches it. Classify it by the fire-barrel prop it drives. Once lit it
         // gains a CraftingInteraction and is a Station on its own; matching the prop keeps it a Station
@@ -1192,6 +1833,31 @@ public static class FocusStartPatch
     }
 }
 
+// The game's aim-outline system deactivates a shared aim target's outline (the M60 turret) by
+// calling OutlineRenderer.SetState(Inactive), and it runs after the mod's LateUpdate, so re-forcing
+// the state in LateUpdate loses the timing race. This prefix intercepts the setter itself: while
+// focus is on, an external attempt to deactivate a danger hazard's outline is rewritten to Active
+// (and m_AllowRender restored), so the danger outline stays lit. The mod's own state changes pass
+// through untouched (ModDrivingOutline is set around them), so a hazard can still go dark when it
+// expires or is destroyed. SetState's parameters are a blittable enum and bool, so the patch is safe.
+[HarmonyPatch(typeof(OutlineRenderer), nameof(OutlineRenderer.SetState))]
+public static class OutlineSetStatePatch
+{
+    [HarmonyPrefix]
+    public static void Prefix(OutlineRenderer __instance, ref OutlineState value)
+    {
+        try
+        {
+            if (Plugin.ModDrivingOutline || !Plugin.FocusActive || value == OutlineState.Active) return;
+            if (!Plugin.DangerOutlinePtrs.Contains(__instance.Pointer)) return;
+            // Rewrite the external deactivation to Active. SetState's own body then recomputes the
+            // WillRender gate (m_AllowRender) from the active category state, so nothing else is needed.
+            value = OutlineState.Active;
+        }
+        catch { }
+    }
+}
+
 [HarmonyPatch(typeof(FocusController), "EndFocus")]
 public static class FocusEndPatch
 {
@@ -1211,7 +1877,11 @@ public class Ticker : MonoBehaviour
 {
     public Ticker(IntPtr ptr) : base(ptr) { }
 
-    public void LateUpdate() => Plugin.DrainAttachQueue();
+    public void LateUpdate()
+    {
+        Plugin.DrainAttachQueue();
+        Plugin.TickHazards();
+    }
 
     public void OnGUI()
     {

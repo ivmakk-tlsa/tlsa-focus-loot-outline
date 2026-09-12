@@ -4,6 +4,10 @@ All notable changes to this mod are documented here. The format follows [Keep a 
 
 ## [Unreleased]
 
+### Added
+
+- Danger objects outline in red during focus: burning ground, acid and infection puddles, gas tanks, traps, and a placed box mine with a ring at its blast radius. New `IncludeDanger` and `DangerColor` settings.
+
 ## [1.0.2] - 2026-09-10
 
 ### Added
