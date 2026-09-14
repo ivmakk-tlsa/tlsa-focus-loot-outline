@@ -1,3 +1,7 @@
+v1.1.0 - 2026-09-14
+Added: Dangers glow red in focus mode, so a hazard next to the loot is easy to spot: burning ground, acid and infection puddles, traps, and tripwire and proximity mines.
+Added: A toggle and a color setting for the danger highlight in the config.
+
 v1.0.2 - 2026-09-10
 Added: A smarter check reads the game's own loot signal, so decor copies of loot props and used-up containers stay dark while real loot still glows.
 Changed: The outline color is now a single hex value in the config, such as #FFD91A, instead of separate red, green, blue, and alpha numbers. Fuel cans always glow red to match the game.
