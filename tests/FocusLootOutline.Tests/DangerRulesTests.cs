@@ -67,6 +67,36 @@ public class DangerRulesTests
     public void ShouldLightGas_lights_only_before_it_explodes(bool exploded, bool expected)
         => Assert.Equal(expected, DangerRules.ShouldLightGas(exploded));
 
+    // --- TrapTileLabel ------------------------------------------------------------------------------
+
+    [Theory]
+    [InlineData("trap-infection-ground(Clone)", "infection")]
+    [InlineData("trap-poison-ground", "infection")]
+    [InlineData("trap-acid-ground(Clone)", "acid")]
+    [InlineData("trap-fire-ground", "fire")]
+    [InlineData("trap-burn-ground", "fire")]
+    [InlineData("trap-gas-ground", "gas")]
+    [InlineData("trap-proximity-mine(Clone)", "mine")]  // the buried proximity land mine
+    [InlineData("Trap-Infection-Ground", "infection")]  // case-insensitive
+    public void TrapTileLabel_labels_hazard_ground_traps(string name, string expected)
+        => Assert.Equal(expected, DangerRules.TrapTileLabel(name));
+
+    [Theory]
+    [InlineData(null)]
+    [InlineData("")]
+    [InlineData("Floor-Tile-1(Clone)")]      // an ordinary map tile
+    [InlineData("trap-spike-ground")]        // a trap, but not a hazard-cloud kind
+    [InlineData("deco-infection-barrel")]    // has a keyword but is not a trap tile
+    public void TrapTileLabel_is_null_for_non_hazard_trap_tiles(string name)
+        => Assert.Null(DangerRules.TrapTileLabel(name));
+
+    [Fact]
+    public void IsHazardTrapTile_matches_TrapTileLabel()
+    {
+        Assert.True(DangerRules.IsHazardTrapTile("trap-infection-ground(Clone)"));
+        Assert.False(DangerRules.IsHazardTrapTile("Floor-Tile-1(Clone)"));
+    }
+
     // --- RingRadius ---------------------------------------------------------------------------------
 
     [Fact]
@@ -107,61 +137,5 @@ public class DangerRulesTests
                 Assert.False(
                     Math.Abs(points[i].x - points[j].x) < 1e-4 && Math.Abs(points[i].z - points[j].z) < 1e-4,
                     $"points {i} and {j} coincide");
-    }
-
-    // --- RingTriangles --------------------------------------------------------------------------------
-
-    [Theory]
-    [InlineData(48)]
-    [InlineData(16)]
-    [InlineData(3)]
-    public void RingTriangles_returns_two_triangles_per_segment_within_the_vertex_range(int segments)
-    {
-        var indices = DangerRules.RingTriangles(segments);
-        Assert.Equal(6 * segments, indices.Length);
-        foreach (var idx in indices)
-        {
-            Assert.InRange(idx, 0, 2 * segments - 1);
-        }
-    }
-
-    [Fact]
-    public void RingTriangles_closing_quad_references_index_0_and_segments()
-    {
-        int segments = DangerRules.RingSegments;
-        var indices = DangerRules.RingTriangles(segments);
-        // The last quad (segment index `segments - 1`) joins back to the first outer/inner vertices.
-        var lastQuad = new int[6];
-        Array.Copy(indices, 6 * (segments - 1), lastQuad, 0, 6);
-        Assert.Contains(0, lastQuad);
-        Assert.Contains(segments, lastQuad);
-    }
-
-    [Fact]
-    public void RingTriangles_all_triangles_share_the_same_winding_sign()
-    {
-        int segments = DangerRules.RingSegments;
-        var outer = DangerRules.RingPoints(1f, segments);
-        var inner = DangerRules.RingPoints(0.85f, segments);
-        var vertices = new (float x, float z)[2 * segments];
-        Array.Copy(outer, vertices, segments);
-        Array.Copy(inner, 0, vertices, segments, segments);
-
-        var indices = DangerRules.RingTriangles(segments);
-        int? sign = null;
-        for (int t = 0; t < indices.Length / 3; t++)
-        {
-            var a = vertices[indices[t * 3 + 0]];
-            var b = vertices[indices[t * 3 + 1]];
-            var c = vertices[indices[t * 3 + 2]];
-
-            // Twice the signed area of triangle a-b-c in the XZ plane.
-            float signedArea = (b.x - a.x) * (c.z - a.z) - (c.x - a.x) * (b.z - a.z);
-            Assert.NotEqual(0f, signedArea);
-            int triSign = Math.Sign(signedArea);
-
-            if (sign == null) sign = triSign;
-            else Assert.Equal(sign.Value, triSign);
-        }
     }
 }

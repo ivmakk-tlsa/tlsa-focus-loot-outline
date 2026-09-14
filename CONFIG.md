@@ -42,8 +42,6 @@ A burning ground spot has no mesh of its own (its flames are particles), so the 
 
 | Setting | Default | Values | What it does |
 |---|---|---|---|
-| `RingHeight` | `0` | `0` - `1` | `0` draws a flat band on the ground, like a puddle. Above `0` draws a wall of that height in metres (tall reads as a solid tube). Applies to rings built after the change (next scene load). |
-| `RingWidth` | `3` | `0.02` - `3` | Width of the flat band in metres (when `RingHeight` is `0`). At or above the radius the band is a filled disc, like a puddle (the default). Smaller, such as `0.15`, draws a hollow ring. Applies to rings built after the change. |
 | `RingMinRadius` | `0.75` | `0.25` - `3` | Smallest ring radius in metres. A burning spot's damage area is smaller than its flames, so the ring is floored to this. Applies to rings built after the change. |
 | `RingStrength` | `0.35` | `0` - `5` | Glow strength of the ring, separate from `Strength`. Lower is a fainter, thinner line. Applies on the next focus press. |
 

@@ -14,6 +14,7 @@ using Game.Logic.Controllers;
 using Game.Logic.Interaction;
 using Game.Logic.Sensors;
 using Game.Logic.Traps;
+using Game.Maps.Generation;
 using Game.Maps.Markup;
 using Game.Props;
 using Game.Rendering;
@@ -90,8 +91,6 @@ public class Plugin : BasePlugin
     // The ring drawn around a hazard with no mesh (the map's fire spots) and around a placed mine:
     // wall height, the smallest radius, and its own glow strength (the outline fills the wall's
     // whole silhouette, so the ring wants a weaker glow than a prop).
-    internal static ConfigEntry<float> RingHeight;
-    internal static ConfigEntry<float> RingWidth;
     internal static ConfigEntry<float> RingMinRadius;
     internal static ConfigEntry<float> RingStrength;
 
@@ -189,8 +188,6 @@ public class Plugin : BasePlugin
         IncludeObjectives = Config.Bind("Filter", "IncludeObjectives", true, "Highlight objectives and misc (power generator, books, XP interactions).");
         IncludeDanger = Config.Bind("Filter", "IncludeDanger", true, "Highlight danger objects in the Danger color while focus is active: burning ground, acid and infection puddles, gas tanks that can explode, traps, and a placed box mine with a ring at its blast radius.");
         DangerColorHex = Config.Bind("Color", "DangerColor", "#FF2020", "Outline color for danger objects as hex, #RRGGBB or #RRGGBBAA for alpha. Default is red.");
-        RingHeight = Config.Bind("Danger", "RingHeight", 0f, new ConfigDescription("Height in metres of the ring drawn around a hazard that has no mesh of its own (a burning ground spot) and around a placed box mine. 0 draws a flat band on the ground, like a puddle; above 0 draws a wall of that height (tall reads as a solid tube). Applies to rings built after the change (next scene load).", new AcceptableValueRange<float>(0f, 1f)));
-        RingWidth = Config.Bind("Danger", "RingWidth", 3f, new ConfigDescription("Width in metres of the flat band (when RingHeight is 0). At or above the radius the band becomes a filled disc, like a puddle (the default); smaller draws a hollow ring. Applies to rings built after the change.", new AcceptableValueRange<float>(0.02f, 3f)));
         RingMinRadius = Config.Bind("Danger", "RingMinRadius", DangerRules.DefaultMinRingRadius, new ConfigDescription("Smallest ring radius in metres. A burning spot's damage collider is smaller than its flames, so the ring is floored to this. Applies to rings built after the change.", new AcceptableValueRange<float>(0.25f, 3f)));
         RingStrength = Config.Bind("Danger", "RingStrength", 0.35f, new ConfigDescription("Glow strength of the ring, separate from Strength. Lower is a fainter, thinner line. Applies on the next focus press.", new AcceptableValueRange<float>(0f, 5f)));
         AttachPerFrame = Config.Bind("Performance", "AttachPerFrame", 4, new ConfigDescription("How many containers attach outlines per frame after focus starts. Lower is smoother but takes longer to fully light.", new AcceptableValueRange<int>(1, 32)));
@@ -734,9 +731,14 @@ public class Plugin : BasePlugin
         // A placed box mine also gets a ring at its blast radius, so the player sees how far the
         // blast reaches, not only the box. A hazard with no mesh at all (the map's fire spots are
         // particles over an inactive gas-can mesh) gets a ring at its collider radius instead, or it
-        // would never show.
-        if (t.Kind == Kind.Danger && (t.HazardLabel == "mine" || made == 0))
-            AttachRing(t, root, t.HazardLabel == "mine" ? t.HazardRadius : DangerRules.RingRadius(t.HazardRadius, RingMinRadius.Value));
+        // would never show. A ground trap draws no ring before it fires: only its device mesh lights, so
+        // the player sees the trap but not the radius. Once it fires, the spawned cloud's AreaOfEffect
+        // draws the disc. When the trap has no mesh of its own (made == 0), the ring is the only marker.
+        // A thrown box mine gets a blast ring at its explosion radius. A placed proximity-mine tile does
+        // not: the mesh alone marks it. Any danger with no mesh of its own still gets the fallback ring.
+        bool thrownMine = t.Hazard != null && t.Hazard.TryCast<BoxMine>() != null;
+        if (t.Kind == Kind.Danger && (thrownMine || made == 0))
+            AttachRing(t, root, thrownMine ? t.HazardRadius : DangerRules.RingRadius(t.HazardRadius, RingMinRadius.Value));
 
         if (Verbose.Value)
             Log.LogDebug($"[attach] {Now()} '{go.name}' kind={t.Kind}{(t.HazardLabel != null ? ":" + t.HazardLabel : "")}: {made} outline(s) from {renderers.Length} renderer(s) under '{root.name}'.");
@@ -1109,6 +1111,7 @@ public class Plugin : BasePlugin
     private const float DevLabelBaseHeight = 22f;
     private const float DevLabelReferenceHeight = 1080f;
 
+    private static Camera _devCam;
     private static GUIStyle _devLabelStyle;
     private static int _devLabelFontSize = -1;
     private static float _devScale = 1f;
@@ -1119,11 +1122,19 @@ public class Plugin : BasePlugin
     {
         if (!FocusActive || DevLabels == null || !DevLabels.Value) return;
 
-        var cam = Camera.main;
+        // Cache the camera: Camera.main runs a tagged object search on every call, and OnGUI fires
+        // twice a frame. The cached reference goes null when the camera is destroyed (a scene change),
+        // so re-fetch only then.
+        var cam = _devCam;
         if (cam == null)
         {
-            var all = Camera.allCameras;
-            if (all != null && all.Length > 0) cam = all[0];
+            cam = Camera.main;
+            if (cam == null)
+            {
+                var all = Camera.allCameras;
+                if (all != null && all.Length > 0) cam = all[0];
+            }
+            _devCam = cam;
         }
         if (cam == null) return;
 
@@ -1138,8 +1149,8 @@ public class Plugin : BasePlugin
         float w = DevLabelBaseWidth * scale;
         float h = DevLabelBaseHeight * scale;
         float xoff = 4f * scale;
+        float outline = Mathf.Max(1f, scale);
 
-        _devLabelStyle.normal.textColor = Color.yellow;
         foreach (var pair in Registry)
         {
             var t = pair.Value;
@@ -1154,11 +1165,9 @@ public class Plugin : BasePlugin
             if (sp.z <= 0f) continue; // behind the camera
             // A danger label is red with its hazard label, so a hazard reads apart from loot.
             bool danger = t.Kind == Kind.Danger;
-            _devLabelStyle.normal.textColor = danger ? Color.red : Color.yellow;
-            GUI.Label(new Rect(sp.x - xoff, Screen.height - sp.y, w, h), $"{t.RootName} [{KindLabel(t)}]", _devLabelStyle);
+            DrawLabelBoxed(new Rect(sp.x - xoff, Screen.height - sp.y, w, h), $"{t.RootName} [{KindLabel(t)}]", danger ? Color.red : Color.yellow, outline);
         }
 
-        _devLabelStyle.normal.textColor = Color.red;
         foreach (var pair in Registry)
         {
             var t = pair.Value;
@@ -1167,8 +1176,35 @@ public class Plugin : BasePlugin
             try { sp = cam.WorldToScreenPoint(t.Anchor.position); }
             catch { continue; }
             if (sp.z <= 0f) continue;
-            GUI.Label(new Rect(sp.x - xoff, Screen.height - sp.y, w, h), $"{t.RootName} [{KindLabel(t)}] dark: {t.SkipReason}", _devLabelStyle);
+            DrawLabelBoxed(new Rect(sp.x - xoff, Screen.height - sp.y, w, h), $"{t.RootName} [{KindLabel(t)}] dark: {t.SkipReason}", Color.red, outline);
         }
+    }
+
+    private static Texture2D _labelBg;
+
+    // Draw a label over a translucent black box so it stays readable over any world colour. Red or
+    // yellow text on a bright or busy background is otherwise hard to read; the box gives constant
+    // contrast in two draws (the box, then the text), instead of the nine an outline needs. The box is
+    // sized to the text, so a short label does not paint a wide bar. Dev overlay only.
+    private static void DrawLabelBoxed(Rect r, string text, Color color, float o)
+    {
+        if (_labelBg == null)
+        {
+            _labelBg = new Texture2D(1, 1);
+            _labelBg.SetPixel(0, 0, Color.white);
+            _labelBg.Apply();
+        }
+        Vector2 size;
+        try { size = _devLabelStyle.CalcSize(new GUIContent(text)); }
+        catch { size = new Vector2(r.width, r.height); }
+        float padX = 3f * o, padY = 1f * o;
+        var box = new Rect(r.x - padX, r.y - padY, size.x + padX * 2f, size.y + padY * 2f);
+        var prev = GUI.color;
+        GUI.color = new Color(0f, 0f, 0f, 0.65f);
+        GUI.DrawTexture(box, _labelBg);
+        GUI.color = prev;
+        _devLabelStyle.normal.textColor = color;
+        GUI.Label(r, text, _devLabelStyle);
     }
 
     // The kind as shown in labels and the focus snapshot: "Danger:acid" for a hazard, the kind alone otherwise.
@@ -1220,6 +1256,10 @@ public class Plugin : BasePlugin
     private const int HazardRescanFrames = 30;
     private static int _hazardNextScanFrame;
 
+    // Metres, largest gas-mine ring radius. A gas mine's trigger collider is its "too close" zone; cap
+    // it so an oversized volume does not draw a screen-filling disc.
+    private const float GasRingMaxRadius = 6f;
+
     // Rescan while focus is active, on the ticker's frame. Only new or changed hazards do any work.
     internal static void TickHazards()
     {
@@ -1227,7 +1267,9 @@ public class Plugin : BasePlugin
         if (Time.frameCount < _hazardNextScanFrame) return;
         _hazardNextScanFrame = Time.frameCount + HazardRescanFrames;
 
-        ScanHazards();
+        // The periodic rescan sweeps only AreaOfEffect (see ScanHazards): every other hazard is placed
+        // and stays registered from the focus press, so re-sweeping the whole scene for it is wasted work.
+        ScanHazards(false);
         var dead = new List<IntPtr>();
         foreach (var pair in Registry)
         {
@@ -1242,7 +1284,12 @@ public class Plugin : BasePlugin
     // Find every hazard component in the scene and register it, re-reading state on one already
     // tracked. FindObjectsOfType returns active objects only, so a pooled explosion parked inactive is
     // not seen, and one reused for a different puddle is caught by the radius/effect change.
-    internal static void ScanHazards()
+    // full sweeps every hazard kind; the focus press does that once. The periodic rescan passes false
+    // and sweeps only AreaOfEffect: a cloud spawns and expires mid-mission, so it is the only kind that
+    // appears after the press. Every other hazard is placed at scene load (or thrown by the player) and,
+    // once registered, has its live state re-read each rescan through Refresh with no FindObjectsOfType.
+    // FindObjectsOfType walks the whole scene per call, so this cuts the rescan from six sweeps to one.
+    internal static void ScanHazards(bool full = true)
     {
         if (!IncludeDanger.Value) return;
         _hazardNextScanFrame = Time.frameCount + HazardRescanFrames;
@@ -1252,16 +1299,48 @@ public class Plugin : BasePlugin
             // down a PoisonAreaCollider it touches, so it never hurts the player; the burning corpse
             // and the fire glob carry one, and the player's fire damage comes from the AreaOfEffect.
             ScanKind<AreaOfEffect>();
-            ScanKind<GasVolume>();
-            ScanKind<Tripwire>();
-            ScanKind<GunWeaponTrap>();
-            ScanKind<NoiseTrap>();
-            ScanKind<BoxMine>();
+            if (full)
+            {
+                ScanKind<GasVolume>();
+                ScanKind<Tripwire>();
+                ScanKind<GunWeaponTrap>();
+                ScanKind<NoiseTrap>();
+                ScanKind<BoxMine>();
+                // Placed ground traps (trap-infection-ground) are MapTiles that spawn their cloud only
+                // on trigger, so scan the tile to light the device before it fires. ReadHazard's MapTile
+                // branch returns a label for hazard trap tiles only; every other map tile is skipped.
+                ScanMapTiles();
+            }
         }
         catch (Exception e)
         {
             Log.LogWarning($"[danger] scan failed: {e.Message}");
         }
+    }
+
+    // Scan placed ground-trap tiles. Kept apart from ScanKind so the tile count can be logged: a map
+    // holds many tiles, and this sweep runs once per focus press, so the count tells whether the sweep
+    // is cheap enough to keep on the press or needs caching per scene.
+    private static void ScanMapTiles()
+    {
+        Il2CppInterop.Runtime.InteropTypes.Arrays.Il2CppArrayBase<MapTile> tiles;
+        try { tiles = UnityEngine.Object.FindObjectsOfType<MapTile>(); }
+        catch (Exception e)
+        {
+            if (Verbose.Value) Log.LogWarning($"[danger] MapTile scan failed: {e.Message}");
+            return;
+        }
+        for (int i = 0; i < tiles.Length; i++)
+        {
+            var tile = tiles[i];
+            if (tile == null) continue;
+            try { Track(tile); }
+            catch (Exception e)
+            {
+                if (Verbose.Value) Log.LogWarning($"[danger] track MapTile failed: {e.Message}");
+            }
+        }
+        if (Verbose.Value) Log.LogDebug($"[danger] map tiles scanned: {tiles.Length}.");
     }
 
     private static void ScanKind<T>() where T : Component
@@ -1307,7 +1386,10 @@ public class Plugin : BasePlugin
 
         if (!Registry.TryGetValue(c.Pointer, out var t))
         {
-            var root = FindHazardRoot(go);
+            // A trap tile places its device mesh (the biomass) under its own object, so keep that object
+            // as the root and gather meshes there, instead of climbing to a map ancestor.
+            bool isTile = c.TryCast<MapTile>() != null;
+            var root = isTile ? go : FindHazardRoot(go);
             t = new Tracked
             {
                 Kind = Kind.Danger,
@@ -1367,6 +1449,24 @@ public class Plugin : BasePlugin
         public bool Live;
     }
 
+    // True when the object or one of its near ancestors is a deco gas field. The GasVolume component
+    // sits on a "GasVolumeProto" child, and the "deco-hazard-gas-field" marker is on the root above it,
+    // so check a few levels up, not just the component's own object.
+    private static bool NameOrAncestorMarksInertGas(GameObject go)
+    {
+        try
+        {
+            var tr = go.transform;
+            for (int i = 0; i < 4 && tr != null; i++)
+            {
+                if (OutlineFilters.IsInertGasField(tr.gameObject.name)) return true;
+                tr = tr.parent;
+            }
+        }
+        catch { }
+        return false;
+    }
+
     private static HazardState ReadHazard(Component c)
     {
         var s = new HazardState { Active = true, HitsPlayer = true, Mask = -1 };
@@ -1390,9 +1490,19 @@ public class Plugin : BasePlugin
         if (gas != null)
         {
             // A burster's explosion prefab carries its own GasVolume (the cloud that can ignite),
-            // which would double up the acid area on the same root. Only a standing tank counts.
+            // which would double up the acid area on the same root. Only a standing tank or a placed
+            // gas mine counts.
             try { if (gas.GetComponentInParent<Explosion>() != null) return s; } catch { }
+            // A deco gas field is armed in data but never detonates in normal play (see
+            // OutlineFilters.IsInertGasField). Skip it so it does not draw a red ring on decoration.
+            // The marker sits on the object's root, not the GasVolume child, so check the parent chain.
+            if (NameOrAncestorMarksInertGas(c.gameObject)) return s;
             s.Label = "gas";
+            // A GasVolume is a proximity gas mine (mTriggerActivation on player OnTriggerEnter, then
+            // m_DelayTrigger, then m_ExplosionTrigger spawns m_Explosion). Its trigger collider is the
+            // "too close" zone, so draw the ring at that footprint, not a token dot. It has no mesh
+            // (gas-cloud particles only), so the ring is the only marker.
+            s.Radius = GasTriggerRadius(gas);
             bool exploded = false;
             try { exploded = gas.m_Exploded; } catch { }
             s.Live = s.Active && DangerRules.ShouldLightGas(exploded);
@@ -1442,6 +1552,21 @@ public class Plugin : BasePlugin
             s.Live = s.Active && thrown;
             return s;
         }
+        var tile = c.TryCast<MapTile>();
+        if (tile != null)
+        {
+            // Only a hazard trap tile (trap-infection-ground and kin) gets a label; every other map
+            // tile returns a null label and is skipped by the caller.
+            string label = null;
+            try { label = DangerRules.TrapTileLabel(c.gameObject.name); } catch { }
+            if (label == null) return s;
+            s.Label = label;
+            s.Radius = DangerRules.TrapTileRingRadius;
+            // A placed trap is a standing danger while it exists (it re-arms after firing), so light it
+            // whenever it is active, not gated on a detonation flag.
+            s.Live = s.Active;
+            return s;
+        }
         return s;
     }
 
@@ -1451,6 +1576,28 @@ public class Plugin : BasePlugin
         if (t.Hazard == null) return false;
         try { return ReadHazard(t.Hazard).Live; }
         catch { return false; }
+    }
+
+    // The footprint radius of a gas mine's trigger collider (its proximity zone), in metres, floored so
+    // a small collider still frames the device and capped so a large one does not fill the screen.
+    // Falls back to the mine ring radius when no collider can be read.
+    private static float GasTriggerRadius(GasVolume gas)
+    {
+        float r = 0f;
+        try
+        {
+            var box = gas.GetComponent<BoxCollider>();
+            if (box != null)
+            {
+                var scale = gas.transform.lossyScale;
+                float hx = box.size.x * 0.5f * Mathf.Abs(scale.x);
+                float hz = box.size.z * 0.5f * Mathf.Abs(scale.z);
+                r = Mathf.Max(hx, hz);
+            }
+        }
+        catch { }
+        if (r <= 0f) return DangerRules.MineRingFallbackRadius;
+        return Mathf.Min(Mathf.Max(r, RingMinRadius.Value), GasRingMaxRadius);
     }
 
     // The name of the status effect an area applies, resolved by reference against the game's own
@@ -1597,28 +1744,22 @@ public class Plugin : BasePlugin
             ring.transform.rotation = Quaternion.identity;
             ring.layer = root.layer;
 
-            // Two rings of points joined into quads: either a flat band on the ground (outer and
-            // inner radius, the inner shrunk to a point for a filled disc) or a wall (the same radius
-            // at ground and at RingHeight). Triangles go in both windings so the ring shows whichever
-            // side faces the camera: a one-sided flat band drew nothing in-game.
+            // A solid filled disc flat on the ground: a fan from a centre vertex to the rim, single-
+            // winding facing up (+Y). A double-wound flat mesh has two coplanar sides that z-fight, which
+            // the outline drew as a pinwheel of different-shaded triangles; one upward side renders as a
+            // solid, single-colour disc.
             int seg = DangerRules.RingSegments;
-            float height = RingHeight.Value;
-            bool flat = height <= 0.001f;
-            var outer = DangerRules.RingPoints(radius, seg);
-            var inner = flat ? DangerRules.RingPoints(Mathf.Max(radius - RingWidth.Value, 0.01f), seg) : outer;
-            var verts = new Vector3[seg * 2];
+            var rim = DangerRules.RingPoints(radius, seg);
+            var verts = new Vector3[seg + 1];
+            verts[0] = Vector3.zero;
+            for (int i = 0; i < seg; i++) verts[i + 1] = new Vector3(rim[i].x, 0f, rim[i].z);
+            var tris = new int[seg * 3];
             for (int i = 0; i < seg; i++)
             {
-                verts[i] = new Vector3(outer[i].x, 0f, outer[i].z);
-                verts[seg + i] = new Vector3(inner[i].x, flat ? 0f : height, inner[i].z);
-            }
-            var oneSide = DangerRules.RingTriangles(seg);
-            var tris = new int[oneSide.Length * 2];
-            for (int i = 0; i < oneSide.Length; i += 3)
-            {
-                tris[i] = oneSide[i]; tris[i + 1] = oneSide[i + 1]; tris[i + 2] = oneSide[i + 2];
-                int j = oneSide.Length + i;
-                tris[j] = oneSide[i]; tris[j + 1] = oneSide[i + 2]; tris[j + 2] = oneSide[i + 1];
+                int a = 1 + i;
+                int b = 1 + (i + 1) % seg;
+                int ti = i * 3;
+                tris[ti] = 0; tris[ti + 1] = b; tris[ti + 2] = a;
             }
             var mesh = new Mesh();
             mesh.vertices = verts;
@@ -1659,7 +1800,7 @@ public class Plugin : BasePlugin
             {
                 bool will = false; try { will = or.WillRender; } catch { }
                 var p = ring.transform.position;
-                Log.LogDebug($"[danger] ring for '{root.name}' radius={radius:F2} shape={(flat ? "flat w=" + RingWidth.Value.ToString("F2") : "wall h=" + height.ToString("F2"))} at ({p.x:F1}/{p.y:F1}/{p.z:F1}) draw={draw} willRender={will} ({verts.Length} verts).");
+                Log.LogDebug($"[danger] ring for '{root.name}' radius={radius:F2} at ({p.x:F1}/{p.y:F1}/{p.z:F1}) draw={draw} willRender={will} ({verts.Length} verts).");
             }
         }
         catch (Exception e)
@@ -1714,12 +1855,29 @@ public static class LootAwakePatch
     [HarmonyPostfix]
     public static void Postfix(LootContainer __instance)
     {
-        var t = new Plugin.Tracked { Kind = Plugin.Kind.Loot, Loot = __instance, GameObject = __instance.gameObject };
+        var go = __instance.gameObject;
+
+        // A disarmable trap (the placed proximity/tripwire mine) carries a LootContainer and a
+        // TrapDisarm on the same object, so it registers here and would light as neutral loot. It is a
+        // hazard first, so track it as Danger (red) instead: its wire and posts then outline in the
+        // danger color. The Interactable.Awake classifier cannot catch it - it bails on any object that
+        // has a LootContainer - so the reclassification lives here. Once the mine detonates it disables
+        // its collider, and the undetectable-collider gate in ShouldHighlight darkens it.
+        if (go.GetComponent<TrapDisarm>() != null)
+        {
+            Plugin.Registry[__instance.Pointer] = new Plugin.Tracked { Kind = Plugin.Kind.Danger, GameObject = go, HazardLabel = "trap" };
+            if (Plugin.Verbose.Value)
+                Plugin.Log.LogDebug($"[reg] trap LootContainer '{go.name}' -> Danger (TrapDisarm present).");
+            if (Plugin.FocusActive) Plugin.HighlightAll(true);
+            return;
+        }
+
+        var t = new Plugin.Tracked { Kind = Plugin.Kind.Loot, Loot = __instance, GameObject = go };
         Plugin.Registry[__instance.Pointer] = t;
         if (Plugin.Verbose.Value)
         {
             var p = __instance.transform.position;
-            Plugin.Log.LogDebug($"[reg] LootContainer '{__instance.gameObject.name}' at ({p.x:F1},{p.y:F1},{p.z:F1}) searched={__instance.IsSearched} depleted={__instance.IsDepleted}.");
+            Plugin.Log.LogDebug($"[reg] LootContainer '{go.name}' at ({p.x:F1},{p.y:F1},{p.z:F1}) searched={__instance.IsSearched} depleted={__instance.IsDepleted}.");
         }
         if (Plugin.FocusActive) Plugin.HighlightAll(true);
     }

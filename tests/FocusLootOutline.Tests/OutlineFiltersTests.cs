@@ -95,6 +95,19 @@ public class OutlineFiltersTests
     public void NameMarksFire_matches_fire_props_only(string name, bool expected)
         => Assert.Equal(expected, OutlineFilters.NameMarksFire(name));
 
+    // --- IsInertGasField --------------------------------------------------------------------------
+
+    [Theory]
+    [InlineData("deco-hazard-gas-field(Clone)", true)]  // the deco field's root, never detonates in play
+    [InlineData("deco-hazard-gas", true)]
+    // A live gas tank with another name must still light.
+    [InlineData("GasVolumeProto(Clone)", false)]
+    [InlineData("GasTank-Explosive", false)]
+    [InlineData("", false)]
+    [InlineData(null, false)]
+    public void IsInertGasField_matches_deco_gas_field_only(string name, bool expected)
+        => Assert.Equal(expected, OutlineFilters.IsInertGasField(name));
+
     // --- IsBigFlatPlane ---------------------------------------------------------------------------
 
     [Fact]

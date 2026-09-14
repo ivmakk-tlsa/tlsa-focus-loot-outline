@@ -7,6 +7,12 @@ All notable changes to this mod are documented here. The format follows [Keep a 
 ### Added
 
 - Danger objects outline in red during focus: burning ground, acid and infection puddles, gas tanks, traps, and a placed box mine with a ring at its blast radius. New `IncludeDanger` and `DangerColor` settings.
+- A buried proximity land mine now outlines in red while it is armed. It stops showing after it detonates.
+
+### Fixed
+
+- A placed proximity/tripwire mine now outlines in the danger color, not the neutral loot color. The mine can be looted as well as disarmed, so it registered as a loot container; it is now treated as a hazard.
+- A decorative gas field no longer draws a danger ring. This ground gas area is armed in the game data but does not explode in normal play (not from a shot, from standing in it, or from fire), so marking it was a false alarm. A gas tank that can explode still shows.
 
 ## [1.0.2] - 2026-09-10
 

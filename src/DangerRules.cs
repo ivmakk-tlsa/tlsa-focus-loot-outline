@@ -12,10 +12,6 @@ internal static class DangerRules
     // lingering puddle, so it never gets a ground highlight.
     public const float MinLastingDuration = 0.5f;
 
-    // Metres, band width of the mine blast ring: wide enough to read at a glance without covering
-    // the ground inside the blast.
-    public const float RingWidth = 0.15f;
-
     // Used when the blast radius cannot be read from the game data (a missing/zeroed field).
     public const float MineRingFallbackRadius = 3f;
 
@@ -53,11 +49,35 @@ internal static class DangerRules
     // A trap lights only while it is still armed; a tripped trap has already fired.
     public static bool ShouldLightTrap(bool tripped) => !tripped;
 
+    // A placed ground trap (a "trap-infection-ground" MapTile) springs a hazard cloud when the player
+    // steps close. The cloud (a PoisonExplosion prefab with an AreaOfEffect) exists only after it fires,
+    // so the pre-detonation device is the persistent tile itself, matched by name because the tile
+    // carries no hazard component of its own. Disc radius when the tile has no readable radius.
+    public const float TrapTileRingRadius = 3f;
+
+    public static bool IsHazardTrapTile(string name) => TrapTileLabel(name) != null;
+
+    // The hazard label for a placed ground trap tile, or null when the name is not a hazard trap.
+    public static string TrapTileLabel(string name)
+    {
+        if (name == null) return null;
+        string n = name.ToLowerInvariant();
+        if (!n.StartsWith("trap-")) return null;
+        if (n.Contains("infection") || n.Contains("poison")) return "infection";
+        if (n.Contains("acid")) return "acid";
+        if (n.Contains("fire") || n.Contains("burn")) return "fire";
+        if (n.Contains("gas")) return "gas";
+        // A proximity land mine (trap-proximity-mine) explodes when the player steps near. It reads as
+        // "mine" so it also gets a blast ring, the same as a placed box mine.
+        if (n.Contains("mine") || n.Contains("proximity")) return "mine";
+        return null;
+    }
+
     // A gas hazard lights only while its canister has not yet gone off.
     public static bool ShouldLightGas(bool exploded) => !exploded;
 
     // Points on a circle in the XZ plane, counter-clockwise, first point at (radius, 0). The caller
-    // builds a ring mesh from two such rings (outer and inner radius).
+    // builds the danger disc as a fan from a centre vertex to these rim points.
     public static (float x, float z)[] RingPoints(float radius, int segments)
     {
         var points = new (float x, float z)[segments];
@@ -67,32 +87,5 @@ internal static class DangerRules
             points[i] = ((float)(radius * Math.Cos(angle)), (float)(radius * Math.Sin(angle)));
         }
         return points;
-    }
-
-    // Triangle indices for a flat band, closed into a loop. Vertex layout the caller builds:
-    // RingPoints(radius, segments) followed by RingPoints(radius - RingWidth, segments), so outer i
-    // is index i and inner i is index segments + i. Wound clockwise as seen from +Y so the face
-    // points up in Unity's left-handed convention.
-    public static int[] RingTriangles(int segments)
-    {
-        var indices = new int[6 * segments];
-        for (int i = 0; i < segments; i++)
-        {
-            int next = (i + 1) % segments;
-            int outerI = i;
-            int outerNext = next;
-            int innerI = segments + i;
-            int innerNext = segments + next;
-
-            int b = i * 6;
-            indices[b + 0] = outerI;
-            indices[b + 1] = outerNext;
-            indices[b + 2] = innerI;
-
-            indices[b + 3] = outerNext;
-            indices[b + 4] = innerNext;
-            indices[b + 5] = innerI;
-        }
-        return indices;
     }
 }
