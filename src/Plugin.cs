@@ -181,7 +181,7 @@ public class Plugin : BasePlugin
 
         ColorHex = Config.Bind("Color", "Color", "#F9E37E", "Outline color as hex, #RRGGBB or #RRGGBBAA for alpha. Default is a pale warm gold.");
         Strength = Config.Bind("Color", "Strength", 1f, "Outline fresnel strength.");
-        FocusSaturation = Config.Bind("Color", "FocusSaturation", 0.55f, "Least screen color saturation while focus is active. Focus mode desaturates the whole screen (to about 0.3), which washes outline colors toward white; this raises it back so highlight colors stay readable. 1 is full color; lower toward 0.3 restores the game's desaturated focus look. Applies to the whole screen while focus is held.");
+        FocusSaturation = Config.Bind("Color", "FocusSaturation", 0.55f, new ConfigDescription("Least screen color saturation while focus is active. Focus mode desaturates the whole screen (to about 0.3), which washes outline colors toward white; this raises it back so highlight colors stay readable. 1 is full color; lower toward 0.3 restores the game's desaturated focus look. Applies to the whole screen while focus is held.", new AcceptableValueRange<float>(0.3f, 1f)));
 
         OnlyUnsearched = Config.Bind("Filter", "OnlyUnsearched", true, "Highlight only containers that are not yet searched or depleted.");
         IncludeStashes = Config.Bind("Filter", "IncludeStashes", true, "Highlight sector stashes.");
@@ -1087,6 +1087,12 @@ public class Plugin : BasePlugin
             {
                 if (pair.Value.Lit) SetGlow(pair.Value, false);
             }
+            // Clear the whole danger-outline pointer set. A hazard destroyed while lit has a null
+            // OutlineRenderer, so SetGlow above skips it and cannot remove its pointer; that stale
+            // pointer would let a later native-pointer reuse force an unrelated outline back to Active,
+            // and the set would grow for the session. The SetState prefix reads the set only while focus
+            // is active, so the next focus press repopulates it.
+            DangerOutlinePtrs.Clear();
             if (Verbose.Value) Log.LogDebug($"[focus] EXIT: registry={Registry.Count}.");
             return;
         }

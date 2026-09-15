@@ -13,11 +13,12 @@ Every setting lives in `BepInEx\config\com.ivmakk.tlsa.focuslootoutline.cfg`, wr
 
 | Setting | Default | Values | What it does |
 |---|---|---|---|
-| `Color` | `#FFD91A` | hex `#RRGGBB` or `#RRGGBBAA` | Outline color. The default is a warm yellow-gold. Add two more hex digits for alpha (`#RRGGBBAA`); without them the outline is fully opaque. |
+| `Color` | `#F9E37E` | hex `#RRGGBB` or `#RRGGBBAA` | Outline color. The default is a pale warm gold. Add two more hex digits for alpha (`#RRGGBBAA`); without them the outline is fully opaque. |
 | `Strength` | `1.0` | any | Glow edge strength. Higher makes the outline edge brighter. |
+| `FocusSaturation` | `0.55` | `0.3` - `1` | Least screen color saturation while focus is active. Focus mode desaturates the whole screen (to about 0.3), which washes outline colors toward white; this raises it back so highlight colors stay readable. 1 is full color; lower toward 0.3 restores the game's desaturated focus look. |
 | `DangerColor` | `#FF2020` | hex `#RRGGBB` or `#RRGGBBAA` | Outline color for danger objects: burning ground, acid and infection puddles, gas tanks, explosive barrels and fuel tanks, traps, and a placed box mine with a ring at its blast radius. |
 
-Fuel cans always outline in red, to match the game's own highlight on the explosive can. Turn that highlight on or off with `IncludeFuel` in the Filter section.
+Fuel cans always outline in green, to match the game's own fuel-pickup highlight. Turn that highlight on or off with `IncludeFuel` in the Filter section.
 
 ## Filter
 

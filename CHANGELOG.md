@@ -2,27 +2,25 @@
 
 All notable changes to this mod are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this mod uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
-
-### Added
-
-- Explosive props now outline in red during focus: shootable barrels, propane bottles, and the big fuel tank. They stop showing once destroyed.
-- An unlit open campfire now highlights as a neutral station: it outlines its structure mesh (the stones). A fire station with no mesh at all falls back to a small ground disc.
-
-### Fixed
-
-- A fire extinguisher is no longer marked as a danger. It is explosive in the game data but only rockets off when shot and deals no damage.
-
-## [1.1.0] - 2026-09-14
+## [1.1.0] - 2026-09-15
 
 ### Added
 
 - Danger objects outline in red during focus: burning ground, acid and infection puddles, gas tanks, traps, and a placed box mine with a ring at its blast radius. New `IncludeDanger` and `DangerColor` settings.
+- Explosive props now outline in red during focus: shootable barrels, propane bottles, and the big fuel tank. They stop showing once destroyed.
 - A buried proximity land mine now outlines in red while it is armed. It stops showing after it detonates.
+- An unlit open campfire now highlights as a neutral station: it outlines its structure mesh (the stones). A fire station with no mesh at all falls back to a small ground disc.
+- New `FocusSaturation` setting: raises the screen color saturation floor while focus is active, so highlight colors stay readable against focus mode's desaturation.
+
+### Changed
+
+- The default outline color is now a pale warm gold (`#F9E37E`). It was `#FFD91A`.
+- Fuel cans now outline in green, to match the game's own fuel-pickup highlight. They were red.
 
 ### Fixed
 
 - A placed proximity/tripwire mine now outlines in the danger color, not the neutral loot color. The mine can be looted as well as disarmed, so it registered as a loot container; it is now treated as a hazard.
+- A fire extinguisher is no longer marked as a danger. It is explosive in the game data but only rockets off when shot and deals no damage.
 - A decorative gas field no longer draws a danger ring. This ground gas area is armed in the game data but does not explode in normal play (not from a shot, from standing in it, or from fire), so marking it was a false alarm. A gas tank that can explode still shows.
 
 ## [1.0.2] - 2026-09-10

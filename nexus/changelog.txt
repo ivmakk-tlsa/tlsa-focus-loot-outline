@@ -1,6 +1,8 @@
-v1.1.0 - 2026-09-14
-Added: Dangers glow red in focus mode, so a hazard next to the loot is easy to spot: burning ground, acid and infection puddles, traps, and tripwire and proximity mines.
-Added: A toggle and a color setting for the danger highlight in the config.
+v1.1.0 - 2026-09-15
+Added: Dangers glow red in focus mode, so a hazard next to the loot is easy to spot: burning ground, acid and infection puddles, gas tanks, explosive barrels and the big fuel tank, traps, tripwire and proximity mines, and a placed box mine with a ring at its blast radius.
+Added: An unlit campfire now glows in the neutral color, like the other workstations.
+Added: A toggle and a color setting for the danger highlight, and a focus-saturation setting to keep highlight colors readable.
+Changed: Fuel cans now glow green, to match the game's own fuel-pickup highlight. They were red.
 
 v1.0.2 - 2026-09-10
 Added: A smarter check reads the game's own loot signal, so decor copies of loot props and used-up containers stay dark while real loot still glows.
