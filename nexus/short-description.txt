@@ -1,1 +1,1 @@
-Spot loot, carryable supplies, and nearby hazards through walls with distinct colors in focus mode.
+Spot loot, carryable supplies, and nearby hazards through walls in focus mode.
