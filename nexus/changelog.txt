@@ -6,9 +6,6 @@ Added: A separate color setting for carryable fuel cans and supply bags, green b
 Added: A focus-saturation setting adjusts the whole screen's color during focus to keep highlight colors easier to distinguish.
 Changed: The default loot, station, and objective color is now pale warm gold. Existing configured colors are preserved.
 Changed: Carryable fuel cans and supply bags now default to green instead of red. The existing fuel toggle controls both.
-Fixed: Lootable proximity and tripwire mines use the danger color even when they can also be searched.
-Fixed: Active turret danger outlines stay visible while aiming and disappear once the turret is destroyed.
-Fixed: Fire extinguishers, barricades, and inert decorative gas fields stay unmarked by the danger highlight.
 
 v1.0.2 - 2026-09-10
 Added: A smarter check reads the game's own loot signal, so decor copies of loot props and used-up containers stay dark while real loot still glows.

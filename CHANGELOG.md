@@ -19,12 +19,6 @@ All notable changes to this mod are documented here. The format follows [Keep a 
 - The default loot, station, and objective outline color is now pale warm gold (`#F9E37E`, previously `#FFD91A`). Existing configured colors are preserved.
 - Carryable fuel cans and supply bags now default to green instead of red. The existing `IncludeFuel` toggle controls both.
 
-### Fixed
-
-- Lootable proximity and tripwire mines use the danger color even when they can also be searched as containers.
-- Active turret danger outlines remain visible while aiming and stop highlighting once the turret is destroyed.
-- Fire extinguishers, barricades, and inert decorative gas fields stay unmarked by the danger highlight.
-
 ## [1.0.2] - 2026-09-10
 
 ### Added
