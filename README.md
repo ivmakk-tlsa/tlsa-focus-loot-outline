@@ -2,9 +2,11 @@
 
 A mod for [*The Last Stand: Aftermath*](https://www.nexusmods.com/thelaststandaftermath) that outlines searchable containers and lootable interactables while focus mode is active, so you can spot them faster. Loot boxes, sector stashes, supply caches, gated containers, pickups, crafting and utility stations, and objectives light up with a colored outline the moment you enter focus, and go dark when you leave it.
 
-It uses the game's own outline pipeline (the same one that outlines zombies), so the highlight looks native. Highlighting is event-driven, with no per-frame work: a container lights when it spawns or when focus starts, not on a timer.
+Carryable fuel cans and supply bags highlight in green by default. Hazards such as burning ground, explosive props, traps, and mines highlight in red, with flat ground discs marking lingering hazards and a placed Box Mine's blast radius. Loot, stations, and objectives default to pale warm gold.
 
-Everything is configurable in `BepInEx\config\com.ivmakk.tlsa.focuslootoutline.cfg`: the outline color and glow strength, an unsearched-only filter, and a per-kind toggle for each highlight group (stashes, caches, gated, tool-gated, pickups, stations, objectives). Edit the file, then restart the game to apply the change. See [CONFIG.md](CONFIG.md) for every setting, its default, and what it does.
+It uses the game's own outline pipeline (the same one that outlines zombies), so the highlight looks native. Loot registers when it spawns; hazards are scanned when focus starts and refreshed while it stays active.
+
+Settings in `BepInEx\config\com.ivmakk.tlsa.focuslootoutline.cfg` include separate colors for loot, carryables, and dangers, glow strength, focus saturation, an unsearched-only filter, and toggles for highlight groups. Edit the file, then restart the game to apply the change. See [CONFIG.md](CONFIG.md) for every setting, its default, and what it does.
 
 ## Install
 

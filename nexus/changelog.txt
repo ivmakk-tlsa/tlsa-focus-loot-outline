@@ -1,8 +1,14 @@
 v1.1.0 - 2026-09-15
-Added: Dangers glow red in focus mode, so a hazard next to the loot is easy to spot: burning ground, acid and infection puddles, gas tanks, explosive barrels and the big fuel tank, traps, tripwire and proximity mines, and a placed box mine with a ring at its blast radius.
-Added: An unlit campfire now glows in the neutral color, like the other workstations.
-Added: A toggle and a color setting for the danger highlight, and a focus-saturation setting to keep highlight colors readable.
-Changed: Fuel cans now glow green, to match the game's own fuel-pickup highlight. They were red.
+Added: Dangers glow red during focus: burning ground, acid and infection clouds or puddles, explosive barrels and fuel tanks, traps, tripwires, and mines. The danger highlight has its own toggle and color setting.
+Added: Flat ground discs mark active ground hazards and the blast radius of a placed Box Mine. Buried proximity mines highlight their device while armed. Ground markers have size and brightness settings.
+Added: Open campfires highlight their stones, both unlit and lit. Fire stations without a usable mesh show a small ground marker.
+Added: A separate color setting for carryable fuel cans and supply bags, green by default.
+Added: A focus-saturation setting adjusts the whole screen's color during focus to keep highlight colors easier to distinguish.
+Changed: The default loot, station, and objective color is now pale warm gold. Existing configured colors are preserved.
+Changed: Carryable fuel cans and supply bags now default to green instead of red. The existing fuel toggle controls both.
+Fixed: Lootable proximity and tripwire mines use the danger color even when they can also be searched.
+Fixed: Active turret danger outlines stay visible while aiming and disappear once the turret is destroyed.
+Fixed: Fire extinguishers, barricades, and inert decorative gas fields stay unmarked by the danger highlight.
 
 v1.0.2 - 2026-09-10
 Added: A smarter check reads the game's own loot signal, so decor copies of loot props and used-up containers stay dark while real loot still glows.

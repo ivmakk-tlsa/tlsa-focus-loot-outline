@@ -76,8 +76,9 @@ public class Plugin : BasePlugin
     // Loose loot and pickups.
     internal static ConfigEntry<bool> IncludePickups;
 
-    // Carryable fuel cans, outlined in the game's own fuel color (green).
+    // Carryable fuel cans and supply bags. Keep the existing filter key for compatibility.
     internal static ConfigEntry<bool> IncludeFuel;
+    internal static ConfigEntry<string> CarryableColorHex;
 
     // Crafting and utility stations (workbench, merchant, supply store, upgrades, shrine).
     internal static ConfigEntry<bool> IncludeStations;
@@ -112,9 +113,12 @@ public class Plugin : BasePlugin
             ? new Color(r, g, b, a)
             : DefaultOutlineColor;
 
-    // Fuel cans outline in a saturated green, near the game's own fuel-pickup hue but more saturated so
-    // it reads clearly apart from the near-white loot color. X-ray like the rest of the mod's highlights.
-    internal static Color FuelColor => new Color(0.10f, 0.80f, 0.05f, 1f);
+    // Carryable fuel cans and supply bags share a configurable green highlight.
+    private static readonly Color DefaultCarryableColor = new Color(26f / 255f, 204f / 255f, 13f / 255f, 1f);
+    internal static Color FuelColor =>
+        OutlineFilters.TryParseHexColor(CarryableColorHex.Value, out float r, out float g, out float b, out float a)
+            ? new Color(r, g, b, a)
+            : DefaultCarryableColor;
 
     // The danger color (#FF2020 default), used when the configured hex is malformed too.
     private static readonly Color DefaultDangerColor = new Color(1f, 0.125f, 0.125f, 1f);
@@ -133,7 +137,7 @@ public class Plugin : BasePlugin
     // Shared outline category all container outlines reference. Built lazily on first use.
     internal static OutlineCategory Category;
 
-    // The fuel-can outline category (the game's own green). Built alongside Category.
+    // The carryable fuel-can and supply-bag outline category. Built alongside Category.
     internal static OutlineCategory FuelCategory;
 
     // The danger outline category (red by default). Built alongside Category.
@@ -179,7 +183,8 @@ public class Plugin : BasePlugin
         Enabled = Config.Bind("General", "Enabled", true, "Master switch for the focus highlight.");
         Verbose = Config.Bind("General", "Verbose", false, "Verbose diagnostic logging: container registration and outline attachment. Turn on to diagnose a container that does not highlight.");
 
-        ColorHex = Config.Bind("Color", "Color", "#F9E37E", "Outline color as hex, #RRGGBB or #RRGGBBAA for alpha. Default is a pale warm gold.");
+        ColorHex = Config.Bind("Color", "Color", "#F9E37E", "Outline color for loot, stations, and objectives as hex, #RRGGBB or #RRGGBBAA for alpha. Default is a pale warm gold. Carryables use CarryableColor; dangers use DangerColor.");
+        CarryableColorHex = Config.Bind("Color", "CarryableColor", "#1ACC0D", "Outline color for carryable fuel cans and supply bags as hex, #RRGGBB or #RRGGBBAA for alpha. Default is green. Controlled by IncludeFuel.");
         Strength = Config.Bind("Color", "Strength", 1f, "Outline fresnel strength.");
         FocusSaturation = Config.Bind("Color", "FocusSaturation", 0.55f, new ConfigDescription("Least screen color saturation while focus is active. Focus mode desaturates the whole screen (to about 0.3), which washes outline colors toward white; this raises it back so highlight colors stay readable. 1 is full color; lower toward 0.3 restores the game's desaturated focus look. Applies to the whole screen while focus is held.", new AcceptableValueRange<float>(0.3f, 1f)));
 
@@ -189,13 +194,13 @@ public class Plugin : BasePlugin
         IncludeGated = Config.Bind("Filter", "IncludeGated", true, "Highlight battery/item-gated interactables (antidote dispensers, containers that need a battery).");
         IncludeToolGated = Config.Bind("Filter", "IncludeToolGated", true, "Highlight tool-gated interactables (need a tool to unlock).");
         IncludePickups = Config.Bind("Filter", "IncludePickups", true, "Highlight loose loot and pickups (ground items, survivor drops, tool rewards).");
-        IncludeFuel = Config.Bind("Filter", "IncludeFuel", true, "Highlight carryable fuel cans. A fuel can keeps the game's own outline color (green).");
-        IncludeStations = Config.Bind("Filter", "IncludeStations", true, "Highlight crafting and utility stations (workbench, merchant, supply store, upgrades, shrine).");
+        IncludeFuel = Config.Bind("Filter", "IncludeFuel", true, "Highlight carryable fuel cans and supply bags using CarryableColor (green by default). The key retains its original name for compatibility.");
+        IncludeStations = Config.Bind("Filter", "IncludeStations", true, "Highlight crafting and utility stations (workbench, campfire, fire barrel, merchant, supply store, upgrades, shrine).");
         IncludeObjectives = Config.Bind("Filter", "IncludeObjectives", true, "Highlight objectives and misc (power generator, books, XP interactions).");
-        IncludeDanger = Config.Bind("Filter", "IncludeDanger", true, "Highlight danger objects in the Danger color while focus is active: burning ground, acid and infection puddles, gas tanks that can explode, explosive barrels and fuel tanks, traps, and a placed box mine with a ring at its blast radius.");
+        IncludeDanger = Config.Bind("Filter", "IncludeDanger", true, "Highlight hazards using DangerColor during focus: burning ground, acid and infection clouds or puddles, explosive props, traps, and mines. Ground hazards and placed box mines show flat discs; buried proximity mines show their device mesh only.");
         DangerColorHex = Config.Bind("Color", "DangerColor", "#FF2020", "Outline color for danger objects as hex, #RRGGBB or #RRGGBBAA for alpha. Default is red.");
-        RingMinRadius = Config.Bind("Danger", "RingMinRadius", DangerRules.DefaultMinRingRadius, new ConfigDescription("Smallest ring radius in metres. A burning spot's damage collider is smaller than its flames, so the ring is floored to this. Applies to rings built after the change.", new AcceptableValueRange<float>(0.25f, 3f)));
-        RingStrength = Config.Bind("Danger", "RingStrength", 0.35f, new ConfigDescription("Glow strength of the ring, separate from Strength. Lower is a fainter, thinner line. Applies on the next focus press.", new AcceptableValueRange<float>(0f, 5f)));
+        RingMinRadius = Config.Bind("Danger", "RingMinRadius", DangerRules.DefaultMinRingRadius, new ConfigDescription("Minimum ground-hazard disc radius in metres; also the radius of a fire station's fallback disc. Small damage areas are enlarged for visibility. Does not change a box mine's blast-radius disc. Applies to newly built discs; restart to rebuild existing ones.", new AcceptableValueRange<float>(0.25f, 3f)));
+        RingStrength = Config.Bind("Danger", "RingStrength", 0.35f, new ConfigDescription("Glow strength of ground discs, including fire-station fallback discs, separate from Strength. Lower makes discs fainter.", new AcceptableValueRange<float>(0f, 5f)));
         AttachPerFrame = Config.Bind("Performance", "AttachPerFrame", 4, new ConfigDescription("How many containers attach outlines per frame after focus starts. Lower is smoother but takes longer to fully light.", new AcceptableValueRange<int>(1, 32)));
         DevLabels = Config.Bind("Diagnostics", "DevLabels", false, "Dev overlay: while focus is active, draw each highlighted object's render-root name and kind on screen, so a wrongly highlighted prop can be named. Local diagnostic; keep off in normal play.");
 
@@ -2206,10 +2211,8 @@ public static class InteractableAwakePatch
             layers.Add(Plugin.Kind.Gated);
         if (go.GetComponent<ToolRequirementInteraction>() != null)
             layers.Add(Plugin.Kind.ToolGated);
-        // A carryable fuel can (CarryInteraction) is its own kind, outlined in the game's own fuel
-        // color (green) rather than the shared Pickup color. Checked before Pickup. This assumes
-        // CarryInteraction marks the fuel can; if another carryable prop shares the component, it
-        // would also be treated as fuel.
+        // CarryInteraction covers fuel cans and supply bags. Both use CarryableColor and the
+        // existing IncludeFuel toggle. Checked before Pickup to keep the carryable category first.
         if (go.GetComponent<CarryInteraction>() != null)
             layers.Add(Plugin.Kind.Fuel);
         if (go.GetComponent<PickupItem>() != null

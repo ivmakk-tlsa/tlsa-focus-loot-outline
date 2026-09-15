@@ -2,26 +2,28 @@
 
 All notable changes to this mod are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this mod uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
 ## [1.1.0] - 2026-09-15
 
 ### Added
 
-- Danger objects outline in red during focus: burning ground, acid and infection puddles, gas tanks, traps, and a placed box mine with a ring at its blast radius. New `IncludeDanger` and `DangerColor` settings.
-- Explosive props now outline in red during focus: shootable barrels, propane bottles, and the big fuel tank. They stop showing once destroyed.
-- A buried proximity land mine now outlines in red while it is armed. It stops showing after it detonates.
-- An unlit open campfire now highlights as a neutral station: it outlines its structure mesh (the stones). A fire station with no mesh at all falls back to a small ground disc.
-- New `FocusSaturation` setting: raises the screen color saturation floor while focus is active, so highlight colors stay readable against focus mode's desaturation.
+- Red danger highlights during focus for burning ground, acid and infection clouds or puddles, explosive barrels and fuel tanks, gun and noise traps, tripwires, and mines. `IncludeDanger` toggles the group; `DangerColor` changes its color.
+- Flat ground discs mark active ground hazards and the blast radius of a placed Box Mine. Buried proximity mines highlight their device mesh while armed. `RingMinRadius` and `RingStrength` adjust ground markers.
+- Open campfires highlight their stones in the station color, both unlit and lit. Fire stations without a usable mesh show a small ground disc.
+- `CarryableColor` sets the shared outline color for carryable fuel cans and supply bags, green (`#1ACC0D`) by default.
+- `FocusSaturation` adjusts the whole screen's minimum color saturation during focus, keeping highlight colors easier to distinguish.
 
 ### Changed
 
-- The default outline color is now a pale warm gold (`#F9E37E`). It was `#FFD91A`.
-- Fuel cans now outline in green, to match the game's own fuel-pickup highlight. They were red.
+- The default loot, station, and objective outline color is now pale warm gold (`#F9E37E`, previously `#FFD91A`). Existing configured colors are preserved.
+- Carryable fuel cans and supply bags now default to green instead of red. The existing `IncludeFuel` toggle controls both.
 
 ### Fixed
 
-- A placed proximity/tripwire mine now outlines in the danger color, not the neutral loot color. The mine can be looted as well as disarmed, so it registered as a loot container; it is now treated as a hazard.
-- A fire extinguisher is no longer marked as a danger. It is explosive in the game data but only rockets off when shot and deals no damage.
-- A decorative gas field no longer draws a danger ring. This ground gas area is armed in the game data but does not explode in normal play (not from a shot, from standing in it, or from fire), so marking it was a false alarm. A gas tank that can explode still shows.
+- Lootable proximity and tripwire mines use the danger color even when they can also be searched as containers.
+- Active turret danger outlines remain visible while aiming and stop highlighting once the turret is destroyed.
+- Fire extinguishers, barricades, and inert decorative gas fields stay unmarked by the danger highlight.
 
 ## [1.0.2] - 2026-09-10
 
