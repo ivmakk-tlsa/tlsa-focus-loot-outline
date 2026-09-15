@@ -58,6 +58,9 @@ public class Plugin : BasePlugin
     internal static ConfigEntry<string> ColorHex;
     internal static ConfigEntry<float> Strength;
     internal static ConfigEntry<float> FocusSaturation;
+    // Cache of FocusSaturation.Value, refreshed on SettingChanged, so the per-frame saturation pass
+    // does not read the config entry each frame.
+    internal static float FocusSaturationFloor;
 
     // Skip containers already searched/depleted.
     internal static ConfigEntry<bool> OnlyUnsearched;
@@ -187,6 +190,8 @@ public class Plugin : BasePlugin
         CarryableColorHex = Config.Bind("Color", "CarryableColor", "#1ACC0D", "Outline color for carryable fuel cans and supply bags as hex, #RRGGBB or #RRGGBBAA for alpha. Default is green. Controlled by IncludeFuel.");
         Strength = Config.Bind("Color", "Strength", 1f, "Outline fresnel strength.");
         FocusSaturation = Config.Bind("Color", "FocusSaturation", 0.55f, new ConfigDescription("Least screen color saturation while focus is active. Focus mode desaturates the whole screen (to about 0.3), which washes outline colors toward white; this raises it back so highlight colors stay readable. 1 is full color; lower toward 0.3 restores the game's desaturated focus look. Applies to the whole screen while focus is held.", new AcceptableValueRange<float>(0.3f, 1f)));
+        FocusSaturationFloor = FocusSaturation.Value;
+        FocusSaturation.SettingChanged += (_, __) => FocusSaturationFloor = FocusSaturation.Value;
 
         OnlyUnsearched = Config.Bind("Filter", "OnlyUnsearched", true, "Highlight only containers that are not yet searched or depleted.");
         IncludeStashes = Config.Bind("Filter", "IncludeStashes", true, "Highlight sector stashes.");
@@ -532,7 +537,7 @@ public class Plugin : BasePlugin
     internal static void ApplyFocusSaturation()
     {
         if (!FocusActive || Colorizor == null) return;
-        float floor = FocusSaturation.Value;
+        float floor = FocusSaturationFloor;
         try
         {
             var mixers = Colorizor.m_Mixers;
