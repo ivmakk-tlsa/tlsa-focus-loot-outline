@@ -68,7 +68,7 @@ internal static class DangerRules
         if (n.Contains("fire") || n.Contains("burn")) return "fire";
         if (n.Contains("gas")) return "gas";
         // A proximity land mine (trap-proximity-mine) explodes when the player steps near. It reads as
-        // "mine" so it also gets a blast ring, the same as a placed box mine.
+        // "mine"; the device mesh alone marks it, with no ring (see EnsureOutlines).
         if (n.Contains("mine") || n.Contains("proximity")) return "mine";
         return null;
     }

@@ -87,6 +87,7 @@ public class OutlineFiltersTests
     [InlineData("deco-fire-interactable-barrel(Clone)", true)] // the unlit fire's ObjectRoot prop
     [InlineData("fire-firebarrel_0", true)]
     [InlineData("CraftingInteractable-Fire-Camp", true)]       // the lit fire's node
+    [InlineData("InteractiveFire", true)]                      // the open campfire's render root
     // A lamp / light switch and the light rig must NOT be treated as a fire.
     [InlineData("Interactable-Light", false)]
     [InlineData("Mobile_lighting_tower", false)]
@@ -94,6 +95,20 @@ public class OutlineFiltersTests
     [InlineData(null, false)]
     public void NameMarksFire_matches_fire_props_only(string name, bool expected)
         => Assert.Equal(expected, OutlineFilters.NameMarksFire(name));
+
+    // --- IsExcludedExplosive ----------------------------------------------------------------------
+
+    [Theory]
+    [InlineData("Deco-Industrial-FireExtinguisher-1(Clone)", true)]  // the deco root
+    [InlineData("fire-extinguisher-physics", true)]                  // the physics node
+    [InlineData("barricade-section-short(Clone)", true)]             // destructible cover
+    // A real explosive prop must still light.
+    [InlineData("FuelTank-Explosives(Clone)", false)]
+    [InlineData("deco-fuel-barrel-red", false)]
+    [InlineData("", false)]
+    [InlineData(null, false)]
+    public void IsExcludedExplosive_matches_extinguisher_and_barricade(string name, bool expected)
+        => Assert.Equal(expected, OutlineFilters.IsExcludedExplosive(name));
 
     // --- IsInertGasField --------------------------------------------------------------------------
 

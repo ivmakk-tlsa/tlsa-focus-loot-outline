@@ -15,7 +15,7 @@ Every setting lives in `BepInEx\config\com.ivmakk.tlsa.focuslootoutline.cfg`, wr
 |---|---|---|---|
 | `Color` | `#FFD91A` | hex `#RRGGBB` or `#RRGGBBAA` | Outline color. The default is a warm yellow-gold. Add two more hex digits for alpha (`#RRGGBBAA`); without them the outline is fully opaque. |
 | `Strength` | `1.0` | any | Glow edge strength. Higher makes the outline edge brighter. |
-| `DangerColor` | `#FF2020` | hex `#RRGGBB` or `#RRGGBBAA` | Outline color for danger objects: burning ground, acid and infection puddles, gas tanks, traps, and a placed box mine with a ring at its blast radius. |
+| `DangerColor` | `#FF2020` | hex `#RRGGBB` or `#RRGGBBAA` | Outline color for danger objects: burning ground, acid and infection puddles, gas tanks, explosive barrels and fuel tanks, traps, and a placed box mine with a ring at its blast radius. |
 
 Fuel cans always outline in red, to match the game's own highlight on the explosive can. Turn that highlight on or off with `IncludeFuel` in the Filter section.
 
@@ -32,7 +32,7 @@ Fuel cans always outline in red, to match the game's own highlight on the explos
 | `IncludeToolGated` | `true` | `true` / `false` | Highlight tool-gated interactables that need a tool to unlock. |
 | `IncludePickups` | `true` | `true` / `false` | Highlight loose loot and pickups (ground items, survivor drops, tool rewards). |
 | `IncludeFuel` | `true` | `true` / `false` | Highlight carryable fuel cans, in the fuel color. |
-| `IncludeDanger` | `true` | `true` / `false` | Highlight danger objects in the danger color while focus is active: burning ground, acid and infection puddles, gas tanks that can explode, traps, and a placed box mine with its blast-radius ring. |
+| `IncludeDanger` | `true` | `true` / `false` | Highlight danger objects in the danger color while focus is active: burning ground, acid and infection puddles, gas tanks that can explode, explosive barrels and fuel tanks, traps, and a placed box mine with its blast-radius ring. |
 | `IncludeStations` | `true` | `true` / `false` | Highlight crafting and utility stations (workbench, merchant, supply store, upgrades, shrine). |
 | `IncludeObjectives` | `true` | `true` / `false` | Highlight objectives and misc interactions (power generator, books, XP interactions). |
 

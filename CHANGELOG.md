@@ -4,6 +4,15 @@ All notable changes to this mod are documented here. The format follows [Keep a 
 
 ## [Unreleased]
 
+### Added
+
+- Explosive props now outline in red during focus: shootable barrels, propane bottles, and the big fuel tank. They stop showing once destroyed.
+- An unlit open campfire now highlights as a neutral station: it outlines its structure mesh (the stones). A fire station with no mesh at all falls back to a small ground disc.
+
+### Fixed
+
+- A fire extinguisher is no longer marked as a danger. It is explosive in the game data but only rockets off when shot and deals no damage.
+
 ## [1.1.0] - 2026-09-14
 
 ### Added

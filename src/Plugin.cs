@@ -7,6 +7,7 @@ using BepInEx.Unity.IL2CPP;
 using Game.Actors;
 using Game.Actors.Helpers;
 using Game.Data.Models.StatusEffects;
+using Game.Effects;
 using Game.Effects.Explosions;
 using Game.Logic.Combat;
 using Game.Logic.Combat.AoeHandlers;
@@ -14,6 +15,7 @@ using Game.Logic.Controllers;
 using Game.Logic.Interaction;
 using Game.Logic.Sensors;
 using Game.Logic.Traps;
+using Game.Logic.Triggers;
 using Game.Maps.Generation;
 using Game.Maps.Markup;
 using Game.Props;
@@ -140,6 +142,10 @@ public class Plugin : BasePlugin
     // The danger ring's category: the danger color at the ring's own strength.
     internal static OutlineCategory RingCategory;
 
+    // A neutral ground disc for a Station that has no mesh to outline (an unlit open campfire is fire
+    // particles only): the shared color at the ring's own strength.
+    internal static OutlineCategory StationRingCategory;
+
     // Pointers of the OutlineRenderers that belong to a danger hazard. The SetState patch keeps these
     // Active against the game's aim-outline system, which deactivates a shared aim target's outline
     // (the M60 turret) after the mod's LateUpdate. Membership is O(1) in the hot patch path.
@@ -186,7 +192,7 @@ public class Plugin : BasePlugin
         IncludeFuel = Config.Bind("Filter", "IncludeFuel", true, "Highlight carryable fuel cans. A fuel can keeps the game's own outline color (green).");
         IncludeStations = Config.Bind("Filter", "IncludeStations", true, "Highlight crafting and utility stations (workbench, merchant, supply store, upgrades, shrine).");
         IncludeObjectives = Config.Bind("Filter", "IncludeObjectives", true, "Highlight objectives and misc (power generator, books, XP interactions).");
-        IncludeDanger = Config.Bind("Filter", "IncludeDanger", true, "Highlight danger objects in the Danger color while focus is active: burning ground, acid and infection puddles, gas tanks that can explode, traps, and a placed box mine with a ring at its blast radius.");
+        IncludeDanger = Config.Bind("Filter", "IncludeDanger", true, "Highlight danger objects in the Danger color while focus is active: burning ground, acid and infection puddles, gas tanks that can explode, explosive barrels and fuel tanks, traps, and a placed box mine with a ring at its blast radius.");
         DangerColorHex = Config.Bind("Color", "DangerColor", "#FF2020", "Outline color for danger objects as hex, #RRGGBB or #RRGGBBAA for alpha. Default is red.");
         RingMinRadius = Config.Bind("Danger", "RingMinRadius", DangerRules.DefaultMinRingRadius, new ConfigDescription("Smallest ring radius in metres. A burning spot's damage collider is smaller than its flames, so the ring is floored to this. Applies to rings built after the change.", new AcceptableValueRange<float>(0.25f, 3f)));
         RingStrength = Config.Bind("Danger", "RingStrength", 0.35f, new ConfigDescription("Glow strength of the ring, separate from Strength. Lower is a fainter, thinner line. Applies on the next focus press.", new AcceptableValueRange<float>(0f, 5f)));
@@ -265,6 +271,7 @@ public class Plugin : BasePlugin
         FuelCategory = BuildCategory(FuelCategory, FuelColor, "fuel");
         DangerCategory = BuildCategory(DangerCategory, DangerColor, "danger");
         RingCategory = BuildCategory(RingCategory, DangerColor, "ring", RingStrength.Value);
+        StationRingCategory = BuildCategory(StationRingCategory, OutlineColor, "station-ring", RingStrength.Value);
     }
 
     // The category an object's outlines reference, by kind.
@@ -600,6 +607,23 @@ public class Plugin : BasePlugin
             t.Anchor = root.transform;
         }
 
+        // An open campfire's render root ("InteractiveFire") holds only fire particles, so it would
+        // outline nothing. Its structure mesh (the stones, "Campfire_LOD2") sits on the fire-named
+        // parent ("deco-fire-interactable-campfire"), so climb to that parent and outline the mesh
+        // instead of drawing a bare ground disc. The fire barrel keeps its own root (it already has a
+        // mesh), so this only moves a meshless fire station up to its structure.
+        if (t.Kind == Kind.Station && OutlineFilters.NameMarksFire(root.name) && !HasMeshRenderer(root))
+        {
+            var fireRoot = FindFireMeshRoot(root);
+            if (fireRoot != null)
+            {
+                if (Verbose.Value) Log.LogDebug($"[fire-root] '{root.name}' has no mesh; using '{fireRoot.name}'.");
+                root = fireRoot;
+                t.RootName = root.name;
+                t.Anchor = root.transform;
+            }
+        }
+
         // The industrial trash can the game reuses as both loot and camp decor shares one name, so the
         // name cannot tell the two apart. The decor copy stands at or inside a military tent, in a
         // fenced yard the survivor cannot enter, so a tent next to the can marks it. (The lighting
@@ -623,7 +647,7 @@ public class Plugin : BasePlugin
         // An area hazard is its collider radius on the ground: draw the disc there and nothing else.
         if (t.Kind == Kind.Danger && t.AreaOnly)
         {
-            AttachRing(t, root, DangerRules.RingRadius(t.HazardRadius, RingMinRadius.Value));
+            AttachRing(t, root, DangerRules.RingRadius(t.HazardRadius, RingMinRadius.Value), RingCategory);
             if (Verbose.Value) Log.LogDebug($"[attach] {Now()} '{go.name}' kind=Danger:{t.HazardLabel}: area disc only, no mesh outlines under '{root.name}'.");
             return;
         }
@@ -735,10 +759,24 @@ public class Plugin : BasePlugin
         // the player sees the trap but not the radius. Once it fires, the spawned cloud's AreaOfEffect
         // draws the disc. When the trap has no mesh of its own (made == 0), the ring is the only marker.
         // A thrown box mine gets a blast ring at its explosion radius. A placed proximity-mine tile does
-        // not: the mesh alone marks it. Any danger with no mesh of its own still gets the fallback ring.
+        // not: the mesh alone marks it, and a meshless tile shows nothing (no false ring). Any other
+        // danger with no mesh of its own still gets the fallback ring.
         bool thrownMine = t.Hazard != null && t.Hazard.TryCast<BoxMine>() != null;
-        if (t.Kind == Kind.Danger && (thrownMine || made == 0))
-            AttachRing(t, root, thrownMine ? t.HazardRadius : DangerRules.RingRadius(t.HazardRadius, RingMinRadius.Value));
+        // A proximity-mine trap tile marks itself with its device mesh only, never a ring. Where the
+        // tile carries no mesh there is no mine to show, so a bare ring is a false alarm. A thrown box
+        // mine still gets its blast ring.
+        bool proximityMineTile = t.HazardLabel == "mine" && !thrownMine;
+        if (t.Kind == Kind.Danger && !proximityMineTile && (thrownMine || made == 0))
+            AttachRing(t, root, thrownMine ? t.HazardRadius : DangerRules.RingRadius(t.HazardRadius, RingMinRadius.Value), RingCategory);
+
+        // An unlit open campfire ("InteractiveFire") is fire particles only, so it attaches no mesh
+        // outline. Mark it with a neutral ground disc so it is still visible, the same way a meshless
+        // hazard gets a ring. Only a fire-named station with no mesh, so a normal station is untouched.
+        if (t.Kind == Kind.Station && made == 0 && OutlineFilters.NameMarksFire(root.name))
+        {
+            if (Verbose.Value) LogFireStationNeighbours(root);
+            AttachRing(t, root, RingMinRadius.Value, StationRingCategory);
+        }
 
         if (Verbose.Value)
             Log.LogDebug($"[attach] {Now()} '{go.name}' kind={t.Kind}{(t.HazardLabel != null ? ":" + t.HazardLabel : "")}: {made} outline(s) from {renderers.Length} renderer(s) under '{root.name}'.");
@@ -763,7 +801,7 @@ public class Plugin : BasePlugin
     // Some containers (a loot box on a vehicle) have ObjectRoot pointing back at the bare node, so the
     // mesh is a sibling under a shared prop parent instead. For those, walk up to the nearest ancestor
     // that has meshes, capped so a scene grouping node is never lit.
-    private static GameObject FindRenderRoot(GameObject go)
+    internal static GameObject FindRenderRoot(GameObject go)
     {
         try
         {
@@ -827,7 +865,25 @@ public class Plugin : BasePlugin
             }
         }
         catch { }
-        Log.LogDebug($"[unclassified] '{name}' locPath='{loc}' objRoot='{objRoot}' components: {parts}.");
+        // Also dump the render root and its child mesh names. An interactable with no handler
+        // component (an unlit campfire) is classified by the prop it drives, so its mesh names are the
+        // only signal for a name filter.
+        string root = "?", meshes = "";
+        try
+        {
+            var rr = FindRenderRoot(go);
+            root = rr.name;
+            var rs = rr.GetComponentsInChildren<Renderer>(true);
+            var mnames = new List<string>();
+            for (int i = 0; i < rs.Length && mnames.Count < 12; i++)
+            {
+                var r = rs[i];
+                if (r != null) mnames.Add(r.gameObject.name);
+            }
+            meshes = string.Join(", ", mnames);
+        }
+        catch { }
+        Log.LogDebug($"[unclassified] '{name}' locPath='{loc}' objRoot='{objRoot}' renderRoot='{root}' meshes=[{meshes}] components: {parts}.");
     }
 
     // Wall-clock time for a log line. BepInEx does not timestamp its disk log, so the mod stamps its
@@ -1306,6 +1362,10 @@ public class Plugin : BasePlugin
                 ScanKind<GunWeaponTrap>();
                 ScanKind<NoiseTrap>();
                 ScanKind<BoxMine>();
+                // Explosive props: a red barrel, propane bottle, or the big fuel tank. Each is a placed
+                // shootable prop that spawns an explosion when shot, marked by a TriggerExplosion.
+                // Placed at scene load, so scan on the focus press only; the rescan re-reads live state.
+                ScanKind<TriggerExplosion>();
                 // Placed ground traps (trap-infection-ground) are MapTiles that spawn their cloud only
                 // on trigger, so scan the tile to light the device before it fires. ReadHazard's MapTile
                 // branch returns a label for hazard trap tiles only; every other map tile is skipped.
@@ -1386,10 +1446,13 @@ public class Plugin : BasePlugin
 
         if (!Registry.TryGetValue(c.Pointer, out var t))
         {
-            // A trap tile places its device mesh (the biomass) under its own object, so keep that object
-            // as the root and gather meshes there, instead of climbing to a map ancestor.
-            bool isTile = c.TryCast<MapTile>() != null;
-            var root = isTile ? go : FindHazardRoot(go);
+            // Keep the component's own object as the root (no ancestor climb) for a trap tile and for an
+            // explosive prop. A trap tile places its device mesh (the biomass) under its own object. An
+            // explosive prop's TriggerExplosion sits on the barrel/tank body itself ("FuelTank-View"),
+            // so its own object is exactly the mesh to outline; climbing would pull in the stand and the
+            // bollards beside it. Other hazards (a mounted gun on its stand) still climb via FindHazardRoot.
+            bool keepOwnRoot = c.TryCast<MapTile>() != null || c.TryCast<TriggerExplosion>() != null;
+            var root = keepOwnRoot ? go : FindHazardRoot(go);
             t = new Tracked
             {
                 Kind = Kind.Danger,
@@ -1552,6 +1615,45 @@ public class Plugin : BasePlugin
             s.Live = s.Active && thrown;
             return s;
         }
+        var boom = c.TryCast<TriggerExplosion>();
+        if (boom != null)
+        {
+            // A shootable explosive prop: a red barrel, a propane bottle, or the big fuel tank
+            // ("FuelTank-Explosives"). Marked by a TriggerExplosion (spawns the blast) plus a
+            // DamageReceiver (you shoot it to set it off). The DamageReceiver requirement drops a trap's
+            // TriggerExplosion (proximity-triggered, no DamageReceiver) and a thrown grenade. A BoxMine
+            // and a placed trap tile carry a TriggerExplosion too but are already tracked by their own
+            // scans, so skip those. An object with a trigger the mod does not mark (a fire extinguisher,
+            // which only rockets off and deals no damage; a barricade section, which is cover) is skipped
+            // by name.
+            var bgo = c.gameObject;
+            if (bgo == null) return s;
+            // A thrown BoxMine carries a TriggerExplosion too and is tracked by its own scan, so skip it
+            // here. (A MapTile guard cannot be used: the whole map is built from MapTiles, so every prop
+            // sits under one. The DamageReceiver test below is what drops a proximity trap's trigger.)
+            bool alreadyTracked = false;
+            try { alreadyTracked = bgo.GetComponentInParent<BoxMine>() != null; } catch { }
+            if (alreadyTracked) return s;
+            if (NameOrAncestorMarksExcludedExplosive(bgo)) return s;
+            var dr = FindDamageReceiver(bgo);
+            if (dr == null)
+            {
+                if (Verbose.Value)
+                {
+                    try { if (LoggedExplosiveSkip.Add(c.Pointer)) Log.LogDebug($"[danger] skip TriggerExplosion '{bgo.name}' (no DamageReceiver) chain={AncestorChain(bgo)} comps=[{ComponentNames(bgo)}]."); }
+                    catch { }
+                }
+                return s;
+            }
+            s.Label = "explosive";
+            // No DestructibleObject on the fuel tank; it deactivates when it blows, so activeInHierarchy
+            // is the live gate. When a barrel does carry a DestructibleObject, drop it once destroyed too.
+            bool destroyed = false;
+            var destr = FindDestructible(bgo);
+            if (destr != null) { try { destroyed = destr.Destroyed; } catch { } }
+            s.Live = s.Active && !destroyed;
+            return s;
+        }
         var tile = c.TryCast<MapTile>();
         if (tile != null)
         {
@@ -1649,6 +1751,56 @@ public class Plugin : BasePlugin
         return ((mask >> layer) & 1) != 0;
     }
 
+    // TriggerExplosion pointers already logged as skipped (no DestructibleObject), so each logs once.
+    private static readonly HashSet<IntPtr> LoggedExplosiveSkip = new HashSet<IntPtr>();
+
+    // A DamageReceiver marks an explosive prop as a shootable thing (the barrel, the fuel tank), which
+    // is what tells it from a proximity trap's trigger. Checked on the trigger's own object, then its
+    // parents; not its children, so a far receiver under a shared parent is not mistaken for this prop's.
+    private static DamageReceiver FindDamageReceiver(GameObject go)
+    {
+        try
+        {
+            var d = go.GetComponent<DamageReceiver>();
+            if (d == null) d = go.GetComponentInParent<DamageReceiver>();
+            return d;
+        }
+        catch { return null; }
+    }
+
+    // The DestructibleObject on a barrel that carries one, so its Destroyed flag can drop the glow. The
+    // big fuel tank has none (it deactivates instead), so this is optional; null is fine.
+    private static DestructibleObject FindDestructible(GameObject go)
+    {
+        try
+        {
+            var d = go.GetComponent<DestructibleObject>();
+            if (d == null) d = go.GetComponentInParent<DestructibleObject>();
+            if (d == null) d = go.GetComponentInChildren<DestructibleObject>(true);
+            return d;
+        }
+        catch { return null; }
+    }
+
+    // True when an object with an explosive trigger is one the mod does not mark: a fire extinguisher
+    // (explosive in the data but harmless - it only rockets off on the applied force, a
+    // TriggerGasTankForce, and deals no damage) or a barricade section (destructible cover). The marker
+    // sits on the prop root, so check the chain.
+    private static bool NameOrAncestorMarksExcludedExplosive(GameObject go)
+    {
+        try
+        {
+            var tr = go.transform;
+            for (int i = 0; i < 4 && tr != null; i++)
+            {
+                if (OutlineFilters.IsExcludedExplosive(tr.gameObject.name)) return true;
+                tr = tr.parent;
+            }
+        }
+        catch { }
+        return false;
+    }
+
     // The blast radius of a placed mine: the Explosion under its prefab, else the fallback constant.
     private static float MineBlastRadius(BoxMine mine)
     {
@@ -1715,6 +1867,79 @@ public class Plugin : BasePlugin
         return false;
     }
 
+    // True when the subtree holds a real mesh renderer (not a particle/trail/sprite renderer), so the
+    // outline pipeline would have something to draw.
+    private static bool HasMeshRenderer(GameObject go)
+    {
+        try
+        {
+            var rs = go.GetComponentsInChildren<Renderer>(true);
+            for (int i = 0; i < rs.Length; i++)
+            {
+                var r = rs[i];
+                if (r == null) continue;
+                if (r.TryCast<MeshRenderer>() != null || r.TryCast<SkinnedMeshRenderer>() != null) return true;
+            }
+        }
+        catch { }
+        return false;
+    }
+
+    // The nearest fire-named ancestor that holds a real mesh, so an open campfire whose render root is
+    // fire particles only ("InteractiveFire") lights its structure mesh on the parent
+    // ("deco-fire-interactable-campfire") instead of a ground disc. Null when none is found.
+    private static GameObject FindFireMeshRoot(GameObject from)
+    {
+        try
+        {
+            var tr = from.transform.parent;
+            for (int i = 0; i < 4 && tr != null; i++, tr = tr.parent)
+            {
+                var pgo = tr.gameObject;
+                if (OutlineFilters.NameMarksFire(pgo.name) && HasMeshRenderer(pgo)) return pgo;
+            }
+        }
+        catch { }
+        return null;
+    }
+
+    // Diagnostic: for a fire station with no mesh of its own (an unlit open campfire), dump the render
+    // root's parent chain and, for each parent, its immediate children with per-child renderer counts and
+    // the first mesh name found. This locates the campfire's structure mesh (the stones/pit) when it is a
+    // sibling of the fire-particle node, so it can be outlined instead of the ground disc. Verbose only.
+    private static void LogFireStationNeighbours(GameObject root)
+    {
+        try
+        {
+            var tr = root.transform;
+            for (int depth = 0; tr != null && depth < 3; depth++, tr = tr.parent)
+            {
+                var pgo = tr.gameObject;
+                var kids = new List<string>();
+                for (int i = 0; i < tr.childCount && kids.Count < 16; i++)
+                {
+                    var ch = tr.GetChild(i).gameObject;
+                    int rc = 0; string firstMesh = "-";
+                    try
+                    {
+                        var rs = ch.GetComponentsInChildren<Renderer>(true);
+                        rc = rs.Length;
+                        for (int j = 0; j < rs.Length; j++)
+                        {
+                            var r = rs[j];
+                            if (r == null) continue;
+                            if (r.TryCast<MeshRenderer>() != null || r.TryCast<SkinnedMeshRenderer>() != null) { firstMesh = r.gameObject.name; break; }
+                        }
+                    }
+                    catch { }
+                    kids.Add($"{ch.name}(r={rc},mesh={firstMesh})");
+                }
+                Log.LogDebug($"[fire-neighbours] '{pgo.name}' depth={depth} children=[{string.Join(", ", kids)}].");
+            }
+        }
+        catch (Exception e) { Log.LogDebug($"[fire-neighbours] dump failed: {e.Message}"); }
+    }
+
     private static string AncestorChain(GameObject go)
     {
         var parts = new List<string>();
@@ -1732,7 +1957,7 @@ public class Plugin : BasePlugin
     // category. The MeshRenderer itself must not show: it gets a fully transparent material when a
     // transparent shader is available (so it still counts as visible to culling and the outline
     // system), else it stays disabled and the log records whether the outline will still render.
-    private static void AttachRing(Tracked t, GameObject root, float radius)
+    private static void AttachRing(Tracked t, GameObject root, float radius, OutlineCategory category)
     {
         if (t.Ring != null) return;
         if (radius <= 0f) radius = DangerRules.MineRingFallbackRadius;
@@ -1788,7 +2013,7 @@ public class Plugin : BasePlugin
             }
 
             var or = ring.AddComponent<OutlineRenderer>();
-            or.Category = RingCategory;
+            or.Category = category;
             or.m_Renderer = mr;
             or.m_MeshFilter = mf;
             or.m_AllowRender = true;
@@ -2019,6 +2244,15 @@ public static class InteractableAwakePatch
             var it = go.GetComponent<Interactable>();
             var root = it != null ? it.ObjectRoot : null;
             if (root != null && OutlineFilters.NameMarksFire(root.name)) return true;
+        }
+        catch { }
+        // The interactable node and its ObjectRoot can both be unnamed (an open campfire's node is
+        // "Interactable-Light" and its ObjectRoot holds no mesh), so the fire prop shows only at the
+        // render root the outline climbs to ("InteractiveFire"). Match the fire name there too.
+        try
+        {
+            var rr = Plugin.FindRenderRoot(go);
+            if (rr != null && OutlineFilters.NameMarksFire(rr.name)) return true;
         }
         catch { }
         return false;
