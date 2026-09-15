@@ -52,8 +52,25 @@ internal static class OutlineFilters
 
     // Fire-barrel / campfire prop-name fragments. The unlit fire has no interaction handler component
     // (its "light" action is a UnityEvent), so it is classified by the prop it drives. These are
-    // fire-specific, so a lamp or a light switch is not caught.
-    private static readonly string[] FireMarkers = { "firebarrel", "fire-interactable", "Fire-Camp" };
+    // fire-specific, so a lamp or a light switch is not caught. "InteractiveFire" is the open campfire
+    // (meshes "LargeFire"/"Embers") whose interactable node and ObjectRoot are unnamed, so it is matched
+    // at the render root the outline climbs to.
+    private static readonly string[] FireMarkers = { "firebarrel", "fire-interactable", "Fire-Camp", "InteractiveFire" };
+
+    // A deco gas field (a Game.Maps.Markup.GasVolume on a "deco-hazard-gas-field" object) is armed in
+    // data - it has an explosion, a damage model, and all three triggers wired - but it does not
+    // detonate in normal play: not on foot contact, not from a bullet, not from a molotov's fire
+    // (all verified in-game). It is environmental decoration, so it is not a danger worth a red mark.
+    // A live gas tank with a different name still lights.
+    private static readonly string[] InertGasFieldMarkers = { "deco-hazard-gas" };
+
+    // An object that carries an explosive trigger in the data but is not a canister hazard to mark red,
+    // so the mod never marks it. A fire extinguisher ("Deco-Industrial-FireExtinguisher", node
+    // "fire-extinguisher-physics") only rockets off on the applied force and deals no damage (verified
+    // in-game). A barricade section ("barricade-section-short") is destructible cover, not a canister to
+    // avoid, so it is excluded by request. Matched by fragment, so the deco root and its child nodes are
+    // both caught.
+    private static readonly string[] ExcludedExplosiveMarkers = { "extinguisher", "barricade" };
 
     // True when the name is the trash prop the game reuses as both reachable loot and tent decor. The
     // game adapter then skips this copy only when a tent stands next to it; the name alone decides
@@ -100,6 +117,14 @@ internal static class OutlineFilters
 
     // True when a prop name marks a fire barrel / campfire, so an unlit fire is classified by it.
     public static bool NameMarksFire(string name) => ContainsAny(name, FireMarkers);
+
+    // True when the name marks a deco gas field that never detonates in normal play, so the game
+    // adapter skips it instead of drawing a danger ring on inert decoration.
+    public static bool IsInertGasField(string name) => ContainsAny(name, InertGasFieldMarkers);
+
+    // True when the name marks an object with an explosive trigger that the mod does not mark red: a
+    // fire extinguisher (harmless in normal play) or a barricade section (destructible cover).
+    public static bool IsExcludedExplosive(string name) => ContainsAny(name, ExcludedExplosiveMarkers);
 
     // The mesh bounds size on each axis. True for a big flat plane (a ground quad, a decal, or a
     // parachute sheet) that would draw as a bright square with x-ray on. A loot mesh never fits.

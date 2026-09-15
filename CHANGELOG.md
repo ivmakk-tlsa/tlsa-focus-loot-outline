@@ -4,6 +4,21 @@ All notable changes to this mod are documented here. The format follows [Keep a 
 
 ## [Unreleased]
 
+## [1.1.0] - 2026-09-15
+
+### Added
+
+- Red danger highlights during focus for burning ground, acid and infection clouds or puddles, explosive barrels and fuel tanks, gun and noise traps, tripwires, and mines. `IncludeDanger` toggles the group; `DangerColor` changes its color.
+- Flat ground discs mark active ground hazards and the blast radius of a placed Box Mine. Buried proximity mines highlight their device mesh while armed. `RingMinRadius` and `RingStrength` adjust ground markers.
+- Open campfires highlight their stones in the station color, both unlit and lit. Fire stations without a usable mesh show a small ground disc.
+- `CarryableColor` sets the shared outline color for carryable fuel cans and supply bags, green (`#1ACC0D`) by default.
+- `FocusSaturation` adjusts the whole screen's minimum color saturation during focus, keeping highlight colors easier to distinguish.
+
+### Changed
+
+- The default loot, station, and objective outline color is now pale warm gold (`#F9E37E`, previously `#FFD91A`). Existing configured colors are preserved.
+- Carryable fuel cans and supply bags now default to green instead of red. The existing `IncludeFuel` toggle controls both.
+
 ## [1.0.2] - 2026-09-10
 
 ### Added

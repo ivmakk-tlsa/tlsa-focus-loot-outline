@@ -6,9 +6,17 @@ using BepInEx.Logging;
 using BepInEx.Unity.IL2CPP;
 using Game.Actors;
 using Game.Actors.Helpers;
+using Game.Data.Models.StatusEffects;
+using Game.Effects;
+using Game.Effects.Explosions;
+using Game.Logic.Combat;
+using Game.Logic.Combat.AoeHandlers;
 using Game.Logic.Controllers;
 using Game.Logic.Interaction;
 using Game.Logic.Sensors;
+using Game.Logic.Traps;
+using Game.Logic.Triggers;
+using Game.Maps.Generation;
 using Game.Maps.Markup;
 using Game.Props;
 using Game.Rendering;
@@ -36,7 +44,7 @@ namespace FocusLootOutline;
 // sensor cannot detect (its search collider disabled) is skipped for every kind, and a named
 // industrial-trash prop standing at a military tent is skipped at attach. A big flat plane (a ground
 // quad or a parachute sheet that would draw as a bright square) is dropped per mesh.
-[BepInPlugin(PluginGuid, "Focus Loot Outline", "1.0.2")]
+[BepInPlugin(PluginGuid, "Focus Loot Outline", "1.1.0")]
 public class Plugin : BasePlugin
 {
     public const string PluginGuid = "com.ivmakk.tlsa.focuslootoutline";
@@ -49,6 +57,10 @@ public class Plugin : BasePlugin
     // edit takes effect on the next focus activation without a restart.
     internal static ConfigEntry<string> ColorHex;
     internal static ConfigEntry<float> Strength;
+    internal static ConfigEntry<float> FocusSaturation;
+    // Cache of FocusSaturation.Value, refreshed on SettingChanged, so the per-frame saturation pass
+    // does not read the config entry each frame.
+    internal static float FocusSaturationFloor;
 
     // Skip containers already searched/depleted.
     internal static ConfigEntry<bool> OnlyUnsearched;
@@ -67,14 +79,26 @@ public class Plugin : BasePlugin
     // Loose loot and pickups.
     internal static ConfigEntry<bool> IncludePickups;
 
-    // Carryable fuel cans, outlined in the Fuel color (red by default).
+    // Carryable fuel cans and supply bags. Keep the existing filter key for compatibility.
     internal static ConfigEntry<bool> IncludeFuel;
+    internal static ConfigEntry<string> CarryableColorHex;
 
     // Crafting and utility stations (workbench, merchant, supply store, upgrades, shrine).
     internal static ConfigEntry<bool> IncludeStations;
 
     // Objectives and misc (power generator, books, XP interactions).
     internal static ConfigEntry<bool> IncludeObjectives;
+
+    // Danger objects (burning ground, acid/infection puddles, gas tanks, traps, a placed box mine),
+    // outlined in the Danger color. Found by a scene scan on each focus press, not by registration.
+    internal static ConfigEntry<bool> IncludeDanger;
+    internal static ConfigEntry<string> DangerColorHex;
+
+    // The ring drawn around a hazard with no mesh (the map's fire spots) and around a placed mine:
+    // wall height, the smallest radius, and its own glow strength (the outline fills the wall's
+    // whole silhouette, so the ring wants a weaker glow than a prop).
+    internal static ConfigEntry<float> RingMinRadius;
+    internal static ConfigEntry<float> RingStrength;
 
     // How many containers attach their outlines per frame after focus starts. Spreads the one-time
     // attach work over several frames so the first focus press does not stutter.
@@ -84,16 +108,28 @@ public class Plugin : BasePlugin
     // active, to name a wrongly highlighted prop for a filter. Off by default.
     internal static ConfigEntry<bool> DevLabels;
 
-    // The default outline color (#FFD91A), used when the configured hex is malformed.
-    private static readonly Color DefaultOutlineColor = new Color(1f, 0.85f, 0.1f, 1f);
+    // The default outline color (#F9E37E, a pale warm gold), used when the configured hex is malformed.
+    private static readonly Color DefaultOutlineColor = new Color(0.975f, 0.891f, 0.493f, 1f);
 
     internal static Color OutlineColor =>
         OutlineFilters.TryParseHexColor(ColorHex.Value, out float r, out float g, out float b, out float a)
             ? new Color(r, g, b, a)
             : DefaultOutlineColor;
 
-    // Fuel cans keep the game's own red x-ray highlight, so this color is fixed, not configurable.
-    internal static Color FuelColor => new Color(1f, 0f, 0f, 1f);
+    // Carryable fuel cans and supply bags share a configurable green highlight.
+    private static readonly Color DefaultCarryableColor = new Color(26f / 255f, 204f / 255f, 13f / 255f, 1f);
+    internal static Color FuelColor =>
+        OutlineFilters.TryParseHexColor(CarryableColorHex.Value, out float r, out float g, out float b, out float a)
+            ? new Color(r, g, b, a)
+            : DefaultCarryableColor;
+
+    // The danger color (#FF2020 default), used when the configured hex is malformed too.
+    private static readonly Color DefaultDangerColor = new Color(1f, 0.125f, 0.125f, 1f);
+
+    internal static Color DangerColor =>
+        OutlineFilters.TryParseHexColor(DangerColorHex.Value, out float r, out float g, out float b, out float a)
+            ? new Color(r, g, b, a)
+            : DefaultDangerColor;
 
     // Every tracked container, keyed by native pointer.
     internal static readonly Dictionary<IntPtr, Tracked> Registry = new Dictionary<IntPtr, Tracked>();
@@ -104,9 +140,27 @@ public class Plugin : BasePlugin
     // Shared outline category all container outlines reference. Built lazily on first use.
     internal static OutlineCategory Category;
 
-    // The fuel-can outline category (red by default), so a fuel can outlines apart from the shared
-    // color. Built alongside Category.
+    // The carryable fuel-can and supply-bag outline category. Built alongside Category.
     internal static OutlineCategory FuelCategory;
+
+    // The danger outline category (red by default). Built alongside Category.
+    internal static OutlineCategory DangerCategory;
+
+    // The danger ring's category: the danger color at the ring's own strength.
+    internal static OutlineCategory RingCategory;
+
+    // A neutral ground disc for a Station that has no mesh to outline (an unlit open campfire is fire
+    // particles only): the shared color at the ring's own strength.
+    internal static OutlineCategory StationRingCategory;
+
+    // Pointers of the OutlineRenderers that belong to a danger hazard. The SetState patch keeps these
+    // Active against the game's aim-outline system, which deactivates a shared aim target's outline
+    // (the M60 turret) after the mod's LateUpdate. Membership is O(1) in the hot patch path.
+    internal static readonly HashSet<IntPtr> DangerOutlinePtrs = new HashSet<IntPtr>();
+
+    // Set true while the mod itself drives an OutlineRenderer state, so the SetState patch lets the
+    // mod's own deactivation through (turning a hazard dark) and only overrides external calls.
+    internal static bool ModDrivingOutline;
 
     // True while focus mode is active, so a container registered mid-focus can be lit immediately.
     internal static bool FocusActive;
@@ -119,6 +173,12 @@ public class Plugin : BasePlugin
     // run the same ray. Null until the first focus press.
     internal static ProximitySensor Sensor;
 
+    // The focus-mode color post effect, captured at focus start. Focus desaturates the whole screen (to
+    // about 0.3), which washes outline colors toward white. The mod raises that saturation back to a
+    // floor while focus is held, so highlight colors stay readable, then lets the game restore its own
+    // value on focus end.
+    internal static Game.Effects.PostEffects.Controllers.ColorizorPostFxController Colorizor;
+
     public override void Load()
     {
         Log = base.Log;
@@ -126,8 +186,12 @@ public class Plugin : BasePlugin
         Enabled = Config.Bind("General", "Enabled", true, "Master switch for the focus highlight.");
         Verbose = Config.Bind("General", "Verbose", false, "Verbose diagnostic logging: container registration and outline attachment. Turn on to diagnose a container that does not highlight.");
 
-        ColorHex = Config.Bind("Color", "Color", "#FFD91A", "Outline color as hex, #RRGGBB or #RRGGBBAA for alpha. Default is a yellow-gold.");
+        ColorHex = Config.Bind("Color", "Color", "#F9E37E", "Outline color for loot, stations, and objectives as hex, #RRGGBB or #RRGGBBAA for alpha. Default is a pale warm gold. Carryables use CarryableColor; dangers use DangerColor.");
+        CarryableColorHex = Config.Bind("Color", "CarryableColor", "#1ACC0D", "Outline color for carryable fuel cans and supply bags as hex, #RRGGBB or #RRGGBBAA for alpha. Default is green. Controlled by IncludeFuel.");
         Strength = Config.Bind("Color", "Strength", 1f, "Outline fresnel strength.");
+        FocusSaturation = Config.Bind("Color", "FocusSaturation", 0.55f, new ConfigDescription("Least screen color saturation while focus is active. Focus mode desaturates the whole screen (to about 0.3), which washes outline colors toward white; this raises it back so highlight colors stay readable. 1 is full color; lower toward 0.3 restores the game's desaturated focus look. Applies to the whole screen while focus is held.", new AcceptableValueRange<float>(0.3f, 1f)));
+        FocusSaturationFloor = FocusSaturation.Value;
+        FocusSaturation.SettingChanged += (_, __) => FocusSaturationFloor = FocusSaturation.Value;
 
         OnlyUnsearched = Config.Bind("Filter", "OnlyUnsearched", true, "Highlight only containers that are not yet searched or depleted.");
         IncludeStashes = Config.Bind("Filter", "IncludeStashes", true, "Highlight sector stashes.");
@@ -135,9 +199,13 @@ public class Plugin : BasePlugin
         IncludeGated = Config.Bind("Filter", "IncludeGated", true, "Highlight battery/item-gated interactables (antidote dispensers, containers that need a battery).");
         IncludeToolGated = Config.Bind("Filter", "IncludeToolGated", true, "Highlight tool-gated interactables (need a tool to unlock).");
         IncludePickups = Config.Bind("Filter", "IncludePickups", true, "Highlight loose loot and pickups (ground items, survivor drops, tool rewards).");
-        IncludeFuel = Config.Bind("Filter", "IncludeFuel", true, "Highlight carryable fuel cans, in the Fuel color (red by default, matching the game's own explosive-can highlight).");
-        IncludeStations = Config.Bind("Filter", "IncludeStations", true, "Highlight crafting and utility stations (workbench, merchant, supply store, upgrades, shrine).");
+        IncludeFuel = Config.Bind("Filter", "IncludeFuel", true, "Highlight carryable fuel cans and supply bags using CarryableColor (green by default). The key retains its original name for compatibility.");
+        IncludeStations = Config.Bind("Filter", "IncludeStations", true, "Highlight crafting and utility stations (workbench, campfire, fire barrel, merchant, supply store, upgrades, shrine).");
         IncludeObjectives = Config.Bind("Filter", "IncludeObjectives", true, "Highlight objectives and misc (power generator, books, XP interactions).");
+        IncludeDanger = Config.Bind("Filter", "IncludeDanger", true, "Highlight hazards using DangerColor during focus: burning ground, acid and infection clouds or puddles, explosive props, traps, and mines. Ground hazards and placed box mines show flat discs; buried proximity mines show their device mesh only.");
+        DangerColorHex = Config.Bind("Color", "DangerColor", "#FF2020", "Outline color for danger objects as hex, #RRGGBB or #RRGGBBAA for alpha. Default is red.");
+        RingMinRadius = Config.Bind("Danger", "RingMinRadius", DangerRules.DefaultMinRingRadius, new ConfigDescription("Minimum ground-hazard disc radius in metres; also the radius of a fire station's fallback disc. Small damage areas are enlarged for visibility. Does not change a box mine's blast-radius disc. Applies to newly built discs; restart to rebuild existing ones.", new AcceptableValueRange<float>(0.25f, 3f)));
+        RingStrength = Config.Bind("Danger", "RingStrength", 0.35f, new ConfigDescription("Glow strength of ground discs, including fire-station fallback discs, separate from Strength. Lower makes discs fainter.", new AcceptableValueRange<float>(0f, 5f)));
         AttachPerFrame = Config.Bind("Performance", "AttachPerFrame", 4, new ConfigDescription("How many containers attach outlines per frame after focus starts. Lower is smoother but takes longer to fully light.", new AcceptableValueRange<int>(1, 32)));
         DevLabels = Config.Bind("Diagnostics", "DevLabels", false, "Dev overlay: while focus is active, draw each highlighted object's render-root name and kind on screen, so a wrongly highlighted prop can be named. Local diagnostic; keep off in normal play.");
 
@@ -152,7 +220,7 @@ public class Plugin : BasePlugin
         Log.LogInfo("Focus Loot Outline loaded.");
     }
 
-    internal enum Kind { Loot, Stash, Cache, Gated, ToolGated, Pickup, Station, Objective, Fuel }
+    internal enum Kind { Loot, Stash, Cache, Gated, ToolGated, Pickup, Station, Objective, Fuel, Danger }
 
     // A registered container. Holds the typed reference for its state checks, the GameObject to
     // outline, and the outline renderers once attached.
@@ -187,6 +255,22 @@ public class Plugin : BasePlugin
         // empty.
         public OutlineController Controller;
         public bool UsesController;
+
+        // Danger only. Hazard is the scanned component (AreaOfEffect, FireAreaCollider, GasVolume,
+        // Tripwire, GunWeaponTrap, NoiseTrap, BoxMine); null for a TrapDisarm interactable, which
+        // registers through the Interactable patch like any other kind. HazardLabel names it for the
+        // dev label and the log ("acid", "fire", "mine", ...). HazardRadius and HazardEffect are the
+        // values seen at the last scan, so a pooled explosion reused with a different puddle is
+        // detected and re-attached. Ring is the mod-built blast ring (mine only).
+        public Component Hazard;
+        public string HazardLabel;
+        // An AreaOfEffect hazard draws only the disc at its collider radius. Its prefab's meshes are
+        // debris (a burster's gibs) or a switched-off variant, never the hazard's footprint, so they
+        // are not outlined.
+        public bool AreaOnly;
+        public float HazardRadius;
+        public string HazardEffect;
+        public GameObject Ring;
     }
 
     // Build or refresh the outline categories from config so a live color edit is honored. The shared
@@ -195,13 +279,20 @@ public class Plugin : BasePlugin
     {
         Category = BuildCategory(Category, OutlineColor, "shared");
         FuelCategory = BuildCategory(FuelCategory, FuelColor, "fuel");
+        DangerCategory = BuildCategory(DangerCategory, DangerColor, "danger");
+        RingCategory = BuildCategory(RingCategory, DangerColor, "ring", RingStrength.Value);
+        StationRingCategory = BuildCategory(StationRingCategory, OutlineColor, "station-ring", RingStrength.Value);
     }
+
+    // The category an object's outlines reference, by kind.
+    private static OutlineCategory CategoryFor(Kind kind) =>
+        kind == Kind.Fuel ? FuelCategory : kind == Kind.Danger ? DangerCategory : Category;
 
     // Create the category on first use, then set its active/inactive state from config. The outline
     // always draws over walls (x-ray, m_DepthTest false): a depth-tested outline left a large object
     // like the player vehicle with no visible outline at all, even in direct view. Strength is shared
     // across both categories; only the color differs.
-    private static OutlineCategory BuildCategory(OutlineCategory cat, Color color, string label)
+    private static OutlineCategory BuildCategory(OutlineCategory cat, Color color, string label, float? strength = null)
     {
         if (cat == null)
         {
@@ -216,7 +307,7 @@ public class Plugin : BasePlugin
         active.m_DepthTest = false;
         active.m_Color = color;
         active.m_ColorblindColor = color;
-        active.m_FresnelStrength = Strength.Value;
+        active.m_FresnelStrength = strength ?? Strength.Value;
 
         var inactive = cat.m_Inactive;
         inactive.m_Enabled = false;
@@ -233,6 +324,11 @@ public class Plugin : BasePlugin
         // so the object can never light. Return false here to keep the decision in step with that
         // drawable state, instead of asking SetGlow to light it every press and hitting the null guard.
         if (t.SkipReason == "tent") return false;
+
+        // A scanned hazard is not an interactable: it has no sensor collider to test, and its state
+        // (a puddle expired, a mine detonated, a tank exploded) is re-read from the component here.
+        if (t.Kind == Kind.Danger && t.Hazard != null)
+            return IncludeDanger.Value && IsHazardLive(t);
 
         // The game's sensor finds an interactable only through an enabled collider on a sensor layer.
         // With none enabled, the object never prompts, so it is dark whatever its kind or position.
@@ -289,6 +385,9 @@ public class Plugin : BasePlugin
                 return IncludeStations.Value;
             case Kind.Objective:
                 return IncludeObjectives.Value;
+            case Kind.Danger:
+                // A TrapDisarm interactable (no scanned Hazard); the collider gate above applies.
+                return IncludeDanger.Value;
         }
         return false;
     }
@@ -411,6 +510,52 @@ public class Plugin : BasePlugin
         }
     }
 
+    // Capture the focus-mode color post effect at focus start, so ApplyFocusSaturation can raise its
+    // saturation each frame while focus is held.
+    internal static void CaptureColorizor()
+    {
+        _satLogged = false;
+        try
+        {
+            var pfx = UnityEngine.Object.FindObjectOfType<Game.Effects.PostEffects.Controllers.GameCameraPostFx>();
+            Colorizor = pfx != null ? pfx.m_Colorizor : null;
+            if (Verbose.Value && Colorizor == null) Log.LogDebug("[postfx] no Colorizor controller found at focus start.");
+        }
+        catch (Exception e)
+        {
+            Colorizor = null;
+            if (Verbose.Value) Log.LogDebug($"[postfx] capture failed: {e.Message}");
+        }
+    }
+
+    // Raise the focus-mode screen saturation back up to the configured floor while focus is held. Focus
+    // desaturates the whole screen (a colorizor mixer drops saturation to about 0.3), which washes the
+    // outline colors toward white. Any mixer below the floor is lifted to it; a neutral mixer (1.0) is
+    // left alone. Called each frame from the Ticker while focus is active. The game restores its own
+    // saturation on focus end, so nothing needs restoring here. Whole-screen, only during focus.
+    private static bool _satLogged;
+    internal static void ApplyFocusSaturation()
+    {
+        if (!FocusActive || Colorizor == null) return;
+        float floor = FocusSaturationFloor;
+        try
+        {
+            var mixers = Colorizor.m_Mixers;
+            int n = mixers != null ? mixers.Count : 0;
+            for (int i = 0; i < n; i++)
+            {
+                var mx = mixers[i];
+                if (mx == null || mx.Saturation >= floor) continue;
+                if (Verbose.Value && !_satLogged) { _satLogged = true; Log.LogDebug($"[postfx] raising focus saturation {mx.Saturation:F3} -> {floor:F3}."); }
+                mx.Saturation = floor;
+                mx.m_SaturationStart = floor;
+                mx.m_SaturationTarget = floor;
+                mx.m_SaturationT = 1f;
+            }
+        }
+        catch { }
+    }
+
     // A decor copy of the industrial trash can stands at a military tent, inside a fenced yard the
     // survivor cannot enter; a lootable copy stands in the open. The can itself is identical in both
     // (same prefab, search collider enabled, clear sight lines for metres around it), so the tent is
@@ -472,6 +617,23 @@ public class Plugin : BasePlugin
             t.Anchor = root.transform;
         }
 
+        // An open campfire's render root ("InteractiveFire") holds only fire particles, so it would
+        // outline nothing. Its structure mesh (the stones, "Campfire_LOD2") sits on the fire-named
+        // parent ("deco-fire-interactable-campfire"), so climb to that parent and outline the mesh
+        // instead of drawing a bare ground disc. The fire barrel keeps its own root (it already has a
+        // mesh), so this only moves a meshless fire station up to its structure.
+        if (t.Kind == Kind.Station && OutlineFilters.NameMarksFire(root.name) && !HasMeshRenderer(root))
+        {
+            var fireRoot = FindFireMeshRoot(root);
+            if (fireRoot != null)
+            {
+                if (Verbose.Value) Log.LogDebug($"[fire-root] '{root.name}' has no mesh; using '{fireRoot.name}'.");
+                root = fireRoot;
+                t.RootName = root.name;
+                t.Anchor = root.transform;
+            }
+        }
+
         // The industrial trash can the game reuses as both loot and camp decor shares one name, so the
         // name cannot tell the two apart. The decor copy stands at or inside a military tent, in a
         // fenced yard the survivor cannot enter, so a tent next to the can marks it. (The lighting
@@ -491,6 +653,14 @@ public class Plugin : BasePlugin
         // OutlineController, which lights the whole body - the same one RedAimOutline drives on live
         // zombies. Use it when present; otherwise fall through to the manual outlines.
         if (TrySetupCorpseController(t, root, go)) return;
+
+        // An area hazard is its collider radius on the ground: draw the disc there and nothing else.
+        if (t.Kind == Kind.Danger && t.AreaOnly)
+        {
+            AttachRing(t, root, DangerRules.RingRadius(t.HazardRadius, RingMinRadius.Value), RingCategory);
+            if (Verbose.Value) Log.LogDebug($"[attach] {Now()} '{go.name}' kind=Danger:{t.HazardLabel}: area disc only, no mesh outlines under '{root.name}'.");
+            return;
+        }
 
         Il2CppInterop.Runtime.InteropTypes.Arrays.Il2CppArrayBase<Renderer> renderers;
         try
@@ -528,10 +698,29 @@ public class Plugin : BasePlugin
 
             // Skip a big flat plane (a ground quad, a decal, a parachute sheet). Some containers
             // carry one, and with x-ray on it draws as a bright square that swamps the loot. A loot
-            // mesh is never both this thin in one axis and this wide in another.
-            if (IsBigFlatPlane(r))
+            // mesh is never both this thin in one axis and this wide in another. A danger hazard is
+            // the exception: a puddle's ground quad is the very thing to outline, so it keeps it.
+            if (t.Kind != Kind.Danger && IsBigFlatPlane(r))
             {
                 if (Verbose.Value) Log.LogDebug($"[skip-flat] '{go.name}' mesh '{r.gameObject.name}'.");
+                continue;
+            }
+
+            // A hazard prefab can carry a switched-off variant mesh (the fire spot's unused gas can).
+            // An outline on an inactive object draws nothing, and counting it would hide that the
+            // hazard has no visible mesh and needs the ring instead.
+            if (t.Kind == Kind.Danger && !r.gameObject.activeInHierarchy)
+            {
+                if (Verbose.Value) Log.LogDebug($"[skip-inactive] '{go.name}' mesh '{r.gameObject.name}'.");
+                continue;
+            }
+
+            // A trap prop can bundle an effect billboard (the M60's "Flare" muzzle glow) that
+            // outlines as a floating flat rectangle. Skip it on danger props only, so a flare-gun or
+            // road-flare loot mesh with a similar name is untouched.
+            if (t.Kind == Kind.Danger && r.gameObject.name.IndexOf("Flare", StringComparison.OrdinalIgnoreCase) >= 0)
+            {
+                if (Verbose.Value) Log.LogDebug($"[skip-flare] '{go.name}' mesh '{r.gameObject.name}'.");
                 continue;
             }
 
@@ -550,7 +739,7 @@ public class Plugin : BasePlugin
             {
                 var existing = r.gameObject.GetComponent<OutlineRenderer>();
                 var or = existing != null ? existing : r.gameObject.AddComponent<OutlineRenderer>();
-                or.Category = t.Kind == Kind.Fuel ? FuelCategory : Category;
+                or.Category = CategoryFor(t.Kind);
                 or.m_Renderer = r;
                 if (smr != null)
                 {
@@ -562,7 +751,7 @@ public class Plugin : BasePlugin
                     if (mf != null) or.m_MeshFilter = mf;
                 }
                 or.m_AllowRender = true;
-                or.SetState(OutlineState.Inactive, true);
+                ModSetState(or, OutlineState.Inactive);
                 try { or.UpdateRenderFunction(); } catch { }
                 t.Outlines.Add(or);
                 made++;
@@ -573,8 +762,34 @@ public class Plugin : BasePlugin
             }
         }
 
+        // A placed box mine also gets a ring at its blast radius, so the player sees how far the
+        // blast reaches, not only the box. A hazard with no mesh at all (the map's fire spots are
+        // particles over an inactive gas-can mesh) gets a ring at its collider radius instead, or it
+        // would never show. A ground trap draws no ring before it fires: only its device mesh lights, so
+        // the player sees the trap but not the radius. Once it fires, the spawned cloud's AreaOfEffect
+        // draws the disc. When the trap has no mesh of its own (made == 0), the ring is the only marker.
+        // A thrown box mine gets a blast ring at its explosion radius. A placed proximity-mine tile does
+        // not: the mesh alone marks it, and a meshless tile shows nothing (no false ring). Any other
+        // danger with no mesh of its own still gets the fallback ring.
+        bool thrownMine = t.Hazard != null && t.Hazard.TryCast<BoxMine>() != null;
+        // A proximity-mine trap tile marks itself with its device mesh only, never a ring. Where the
+        // tile carries no mesh there is no mine to show, so a bare ring is a false alarm. A thrown box
+        // mine still gets its blast ring.
+        bool proximityMineTile = t.HazardLabel == "mine" && !thrownMine;
+        if (t.Kind == Kind.Danger && !proximityMineTile && (thrownMine || made == 0))
+            AttachRing(t, root, thrownMine ? t.HazardRadius : DangerRules.RingRadius(t.HazardRadius, RingMinRadius.Value), RingCategory);
+
+        // An unlit open campfire ("InteractiveFire") is fire particles only, so it attaches no mesh
+        // outline. Mark it with a neutral ground disc so it is still visible, the same way a meshless
+        // hazard gets a ring. Only a fire-named station with no mesh, so a normal station is untouched.
+        if (t.Kind == Kind.Station && made == 0 && OutlineFilters.NameMarksFire(root.name))
+        {
+            if (Verbose.Value) LogFireStationNeighbours(root);
+            AttachRing(t, root, RingMinRadius.Value, StationRingCategory);
+        }
+
         if (Verbose.Value)
-            Log.LogDebug($"[attach] {Now()} '{go.name}' kind={t.Kind}: {made} outline(s) from {renderers.Length} renderer(s) under '{root.name}'.");
+            Log.LogDebug($"[attach] {Now()} '{go.name}' kind={t.Kind}{(t.HazardLabel != null ? ":" + t.HazardLabel : "")}: {made} outline(s) from {renderers.Length} renderer(s) under '{root.name}'.");
     }
 
     // Read the renderer's world bounds and hand the flat-plane test to the game-free OutlineFilters
@@ -596,7 +811,7 @@ public class Plugin : BasePlugin
     // Some containers (a loot box on a vehicle) have ObjectRoot pointing back at the bare node, so the
     // mesh is a sibling under a shared prop parent instead. For those, walk up to the nearest ancestor
     // that has meshes, capped so a scene grouping node is never lit.
-    private static GameObject FindRenderRoot(GameObject go)
+    internal static GameObject FindRenderRoot(GameObject go)
     {
         try
         {
@@ -660,7 +875,25 @@ public class Plugin : BasePlugin
             }
         }
         catch { }
-        Log.LogDebug($"[unclassified] '{name}' locPath='{loc}' objRoot='{objRoot}' components: {parts}.");
+        // Also dump the render root and its child mesh names. An interactable with no handler
+        // component (an unlit campfire) is classified by the prop it drives, so its mesh names are the
+        // only signal for a name filter.
+        string root = "?", meshes = "";
+        try
+        {
+            var rr = FindRenderRoot(go);
+            root = rr.name;
+            var rs = rr.GetComponentsInChildren<Renderer>(true);
+            var mnames = new List<string>();
+            for (int i = 0; i < rs.Length && mnames.Count < 12; i++)
+            {
+                var r = rs[i];
+                if (r != null) mnames.Add(r.gameObject.name);
+            }
+            meshes = string.Join(", ", mnames);
+        }
+        catch { }
+        Log.LogDebug($"[unclassified] '{name}' locPath='{loc}' objRoot='{objRoot}' renderRoot='{root}' meshes=[{meshes}] components: {parts}.");
     }
 
     // Wall-clock time for a log line. BepInEx does not timestamp its disk log, so the mod stamps its
@@ -749,6 +982,16 @@ public class Plugin : BasePlugin
         }
     }
 
+    // Drive an OutlineRenderer's state as the mod (not the game), so the SetState patch does not
+    // override this call. Used for every state change the mod makes on a danger outline.
+    internal static void ModSetState(OutlineRenderer or, OutlineState state)
+    {
+        ModDrivingOutline = true;
+        try { or.SetState(state, true); }
+        catch { }
+        finally { ModDrivingOutline = false; }
+    }
+
     internal static void SetGlow(Tracked t, bool on)
     {
         if (t.Lit == on) return;
@@ -776,10 +1019,32 @@ public class Plugin : BasePlugin
         {
             var or = t.Outlines[i];
             if (or == null) continue;
-            try { or.SetState(state, true); }
+            try { ModSetState(or, state); }
             catch (Exception e) { if (Verbose.Value) Log.LogWarning($"[glow] SetState failed: {e.Message}"); }
+            // Keep the danger-outline set in step with the lit state, so the SetState patch protects
+            // only outlines that should be lit now (a dead or expired hazard, turned off here, is
+            // dropped so the aim system's Inactive is no longer overridden back to Active).
+            if (t.Kind == Kind.Danger)
+            {
+                try { if (on) DangerOutlinePtrs.Add(or.Pointer); else DangerOutlinePtrs.Remove(or.Pointer); }
+                catch { }
+            }
         }
         t.Lit = on;
+
+        // Ring diagnostic: the outline's own view of the mod-built ring once lit, to tell a ring the
+        // outline system rejected (no mesh, not visible, will not render) from one it draws unseen.
+        if (on && Verbose.Value && t.Ring != null)
+        {
+            try
+            {
+                var or = t.Outlines[t.Outlines.Count - 1];
+                var mr = t.Ring.GetComponent<MeshRenderer>();
+                int vc = -1; try { var m = or.Mesh; if (m != null) vc = m.vertexCount; } catch { }
+                Log.LogDebug($"[danger] ring lit '{t.RootName}': willRender={or.WillRender} state={or.State} allow={or.m_AllowRender} meshVerts={vc} rendererEnabled={mr.enabled} isVisible={mr.isVisible} layer={t.Ring.layer} active={t.Ring.activeInHierarchy} cat={(or.Category != null ? or.Category.name : "null")}.");
+            }
+            catch (Exception e) { Log.LogDebug($"[danger] ring lit diagnostic failed: {e.Message}"); }
+        }
     }
 
     // Log Interactable.CanBeInteractedWith() for a tracked object: whether the game currently allows
@@ -832,6 +1097,12 @@ public class Plugin : BasePlugin
             {
                 if (pair.Value.Lit) SetGlow(pair.Value, false);
             }
+            // Clear the whole danger-outline pointer set. A hazard destroyed while lit has a null
+            // OutlineRenderer, so SetGlow above skips it and cannot remove its pointer; that stale
+            // pointer would let a later native-pointer reuse force an unrelated outline back to Active,
+            // and the set would grow for the session. The SetState prefix reads the set only while focus
+            // is active, so the next focus press repopulates it.
+            DangerOutlinePtrs.Clear();
             if (Verbose.Value) Log.LogDebug($"[focus] EXIT: registry={Registry.Count}.");
             return;
         }
@@ -839,20 +1110,17 @@ public class Plugin : BasePlugin
         // Light already-attached containers now (cheap); queue the rest for the ticker to attach a
         // few per frame, so the first focus press does not stutter.
         RefreshCategory();
+        ScanHazards();
         int litNow = 0, queued = 0;
         var dead = new List<IntPtr>();
         foreach (var pair in Registry)
         {
             var t = pair.Value;
             if (t.GameObject == null) { dead.Add(pair.Key); continue; }
-            if (ShouldHighlight(t))
+            switch (Refresh(t))
             {
-                if (t.AttachTried) { SetGlow(t, true); litNow++; }
-                else if (!t.Queued) { t.Queued = true; PendingAttach.Enqueue(t); queued++; }
-            }
-            else if (t.Lit)
-            {
-                SetGlow(t, false);
+                case 1: litNow++; break;
+                case 2: queued++; break;
             }
         }
         for (int i = 0; i < dead.Count; i++) Registry.Remove(dead[i]);
@@ -866,10 +1134,25 @@ public class Plugin : BasePlugin
             foreach (var pair in Registry)
             {
                 var tt = pair.Value;
-                if (tt.Lit && tt.RootName != null) lit.Add($"{tt.RootName}[{tt.Kind}]");
+                if (tt.Lit && tt.RootName != null) lit.Add($"{tt.RootName}[{KindLabel(tt)}]");
             }
             Log.LogDebug($"[focus] {Now()} ENTER registry={Registry.Count} litNow={litNow} queued={queued} lit=[{string.Join(", ", lit)}].");
         }
+    }
+
+    // Bring one tracked object in step with its highlight decision: light it if attached, queue the
+    // attach if not, or turn it off. Returns 1 when lit now, 2 when queued, 0 otherwise. Shared by the
+    // focus press and the hazard rescan so both apply the same rule.
+    private static int Refresh(Tracked t)
+    {
+        if (ShouldHighlight(t))
+        {
+            if (t.AttachTried) { SetGlow(t, true); return 1; }
+            if (!t.Queued) { t.Queued = true; PendingAttach.Enqueue(t); return 2; }
+            return 0;
+        }
+        if (t.Lit) SetGlow(t, false);
+        return 0;
     }
 
     // Attach outlines for a few queued containers per frame, then light them. Called by the ticker.
@@ -900,6 +1183,7 @@ public class Plugin : BasePlugin
     private const float DevLabelBaseHeight = 22f;
     private const float DevLabelReferenceHeight = 1080f;
 
+    private static Camera _devCam;
     private static GUIStyle _devLabelStyle;
     private static int _devLabelFontSize = -1;
     private static float _devScale = 1f;
@@ -910,11 +1194,19 @@ public class Plugin : BasePlugin
     {
         if (!FocusActive || DevLabels == null || !DevLabels.Value) return;
 
-        var cam = Camera.main;
+        // Cache the camera: Camera.main runs a tagged object search on every call, and OnGUI fires
+        // twice a frame. The cached reference goes null when the camera is destroyed (a scene change),
+        // so re-fetch only then.
+        var cam = _devCam;
         if (cam == null)
         {
-            var all = Camera.allCameras;
-            if (all != null && all.Length > 0) cam = all[0];
+            cam = Camera.main;
+            if (cam == null)
+            {
+                var all = Camera.allCameras;
+                if (all != null && all.Length > 0) cam = all[0];
+            }
+            _devCam = cam;
         }
         if (cam == null) return;
 
@@ -929,8 +1221,8 @@ public class Plugin : BasePlugin
         float w = DevLabelBaseWidth * scale;
         float h = DevLabelBaseHeight * scale;
         float xoff = 4f * scale;
+        float outline = Mathf.Max(1f, scale);
 
-        _devLabelStyle.normal.textColor = Color.yellow;
         foreach (var pair in Registry)
         {
             var t = pair.Value;
@@ -943,10 +1235,11 @@ public class Plugin : BasePlugin
             try { sp = cam.WorldToScreenPoint(t.Anchor.position); }
             catch { continue; }
             if (sp.z <= 0f) continue; // behind the camera
-            GUI.Label(new Rect(sp.x - xoff, Screen.height - sp.y, w, h), $"{t.RootName} [{t.Kind}]", _devLabelStyle);
+            // A danger label is red with its hazard label, so a hazard reads apart from loot.
+            bool danger = t.Kind == Kind.Danger;
+            DrawLabelBoxed(new Rect(sp.x - xoff, Screen.height - sp.y, w, h), $"{t.RootName} [{KindLabel(t)}]", danger ? Color.red : Color.yellow, outline);
         }
 
-        _devLabelStyle.normal.textColor = Color.red;
         foreach (var pair in Registry)
         {
             var t = pair.Value;
@@ -955,9 +1248,40 @@ public class Plugin : BasePlugin
             try { sp = cam.WorldToScreenPoint(t.Anchor.position); }
             catch { continue; }
             if (sp.z <= 0f) continue;
-            GUI.Label(new Rect(sp.x - xoff, Screen.height - sp.y, w, h), $"{t.RootName} [{t.Kind}] dark: {t.SkipReason}", _devLabelStyle);
+            DrawLabelBoxed(new Rect(sp.x - xoff, Screen.height - sp.y, w, h), $"{t.RootName} [{KindLabel(t)}] dark: {t.SkipReason}", Color.red, outline);
         }
     }
+
+    private static Texture2D _labelBg;
+
+    // Draw a label over a translucent black box so it stays readable over any world colour. Red or
+    // yellow text on a bright or busy background is otherwise hard to read; the box gives constant
+    // contrast in two draws (the box, then the text), instead of the nine an outline needs. The box is
+    // sized to the text, so a short label does not paint a wide bar. Dev overlay only.
+    private static void DrawLabelBoxed(Rect r, string text, Color color, float o)
+    {
+        if (_labelBg == null)
+        {
+            _labelBg = new Texture2D(1, 1);
+            _labelBg.SetPixel(0, 0, Color.white);
+            _labelBg.Apply();
+        }
+        Vector2 size;
+        try { size = _devLabelStyle.CalcSize(new GUIContent(text)); }
+        catch { size = new Vector2(r.width, r.height); }
+        float padX = 3f * o, padY = 1f * o;
+        var box = new Rect(r.x - padX, r.y - padY, size.x + padX * 2f, size.y + padY * 2f);
+        var prev = GUI.color;
+        GUI.color = new Color(0f, 0f, 0f, 0.65f);
+        GUI.DrawTexture(box, _labelBg);
+        GUI.color = prev;
+        _devLabelStyle.normal.textColor = color;
+        GUI.Label(r, text, _devLabelStyle);
+    }
+
+    // The kind as shown in labels and the focus snapshot: "Danger:acid" for a hazard, the kind alone otherwise.
+    internal static string KindLabel(Tracked t) =>
+        t.Kind == Kind.Danger && t.HazardLabel != null ? $"{t.Kind}:{t.HazardLabel}" : t.Kind.ToString();
 
     // The game's HUD scale: the Canvas.scaleFactor of a UICanvasSetup canvas, which folds the
     // resolution and the user's UI Scale setting. Re-read every two seconds, so a settings change is
@@ -992,6 +1316,776 @@ public class Plugin : BasePlugin
         _devScale = found > 0f ? found : fallback;
         return _devScale;
     }
+
+    // --- Danger hazards ----------------------------------------------------------------------------
+    //
+    // Hazards are not interactables, so no Awake patch sees them, and the ones that matter most (the
+    // puddles) live on pooled Explosion objects whose OnEnable fires on every reuse. So instead of
+    // lifecycle patches, the hazards are found by a scene scan on each focus press, and again every
+    // HazardRescanFrames while focus is held so a puddle that lands mid-focus still lights. Hazards are
+    // few and short-lived, so the scan is cheap at that rate.
+
+    private const int HazardRescanFrames = 30;
+    private static int _hazardNextScanFrame;
+
+    // Metres, largest gas-mine ring radius. A gas mine's trigger collider is its "too close" zone; cap
+    // it so an oversized volume does not draw a screen-filling disc.
+    private const float GasRingMaxRadius = 6f;
+
+    // Rescan while focus is active, on the ticker's frame. Only new or changed hazards do any work.
+    internal static void TickHazards()
+    {
+        if (!FocusActive || !Enabled.Value || !IncludeDanger.Value) return;
+        if (Time.frameCount < _hazardNextScanFrame) return;
+        _hazardNextScanFrame = Time.frameCount + HazardRescanFrames;
+
+        // The periodic rescan sweeps only AreaOfEffect (see ScanHazards): every other hazard is placed
+        // and stays registered from the focus press, so re-sweeping the whole scene for it is wasted work.
+        ScanHazards(false);
+        var dead = new List<IntPtr>();
+        foreach (var pair in Registry)
+        {
+            var t = pair.Value;
+            if (t.Kind != Kind.Danger || t.Hazard == null) continue;
+            if (t.GameObject == null) { dead.Add(pair.Key); continue; }
+            Refresh(t);
+        }
+        for (int i = 0; i < dead.Count; i++) Registry.Remove(dead[i]);
+    }
+
+    // Find every hazard component in the scene and register it, re-reading state on one already
+    // tracked. FindObjectsOfType returns active objects only, so a pooled explosion parked inactive is
+    // not seen, and one reused for a different puddle is caught by the radius/effect change.
+    // full sweeps every hazard kind; the focus press does that once. The periodic rescan passes false
+    // and sweeps only AreaOfEffect: a cloud spawns and expires mid-mission, so it is the only kind that
+    // appears after the press. Every other hazard is placed at scene load (or thrown by the player) and,
+    // once registered, has its live state re-read each rescan through Refresh with no FindObjectsOfType.
+    // FindObjectsOfType walks the whole scene per call, so this cuts the rescan from six sweeps to one.
+    internal static void ScanHazards(bool full = true)
+    {
+        if (!IncludeDanger.Value) return;
+        _hazardNextScanFrame = Time.frameCount + HazardRescanFrames;
+        try
+        {
+            // FireAreaCollider is deliberately not scanned: its OnTriggerStay (decompiled) only burns
+            // down a PoisonAreaCollider it touches, so it never hurts the player; the burning corpse
+            // and the fire glob carry one, and the player's fire damage comes from the AreaOfEffect.
+            ScanKind<AreaOfEffect>();
+            if (full)
+            {
+                ScanKind<GasVolume>();
+                ScanKind<Tripwire>();
+                ScanKind<GunWeaponTrap>();
+                ScanKind<NoiseTrap>();
+                ScanKind<BoxMine>();
+                // Explosive props: a red barrel, propane bottle, or the big fuel tank. Each is a placed
+                // shootable prop that spawns an explosion when shot, marked by a TriggerExplosion.
+                // Placed at scene load, so scan on the focus press only; the rescan re-reads live state.
+                ScanKind<TriggerExplosion>();
+                // Placed ground traps (trap-infection-ground) are MapTiles that spawn their cloud only
+                // on trigger, so scan the tile to light the device before it fires. ReadHazard's MapTile
+                // branch returns a label for hazard trap tiles only; every other map tile is skipped.
+                ScanMapTiles();
+            }
+        }
+        catch (Exception e)
+        {
+            Log.LogWarning($"[danger] scan failed: {e.Message}");
+        }
+    }
+
+    // Scan placed ground-trap tiles. Kept apart from ScanKind so the tile count can be logged: a map
+    // holds many tiles, and this sweep runs once per focus press, so the count tells whether the sweep
+    // is cheap enough to keep on the press or needs caching per scene.
+    private static void ScanMapTiles()
+    {
+        Il2CppInterop.Runtime.InteropTypes.Arrays.Il2CppArrayBase<MapTile> tiles;
+        try { tiles = UnityEngine.Object.FindObjectsOfType<MapTile>(); }
+        catch (Exception e)
+        {
+            if (Verbose.Value) Log.LogWarning($"[danger] MapTile scan failed: {e.Message}");
+            return;
+        }
+        for (int i = 0; i < tiles.Length; i++)
+        {
+            var tile = tiles[i];
+            if (tile == null) continue;
+            try { Track(tile); }
+            catch (Exception e)
+            {
+                if (Verbose.Value) Log.LogWarning($"[danger] track MapTile failed: {e.Message}");
+            }
+        }
+        if (Verbose.Value) Log.LogDebug($"[danger] map tiles scanned: {tiles.Length}.");
+    }
+
+    private static void ScanKind<T>() where T : Component
+    {
+        Il2CppInterop.Runtime.InteropTypes.Arrays.Il2CppArrayBase<T> found;
+        try { found = UnityEngine.Object.FindObjectsOfType<T>(); }
+        catch (Exception e)
+        {
+            if (Verbose.Value) Log.LogWarning($"[danger] FindObjectsOfType<{typeof(T).Name}> failed: {e.Message}");
+            return;
+        }
+        for (int i = 0; i < found.Length; i++)
+        {
+            var c = found[i];
+            if (c == null) continue;
+            try { Track(c); }
+            catch (Exception e)
+            {
+                if (Verbose.Value) Log.LogWarning($"[danger] track {typeof(T).Name} '{c.name}' failed: {e.Message}");
+            }
+        }
+    }
+
+    // Register or refresh one scanned hazard. The registry key is the component pointer, so a
+    // rescan finds its own entry. A pooled explosion reused with another radius or effect since the
+    // last scan is reset (glow off, outlines and ring dropped) so it re-attaches to the new shape.
+    private static void Track(Component c)
+    {
+        var state = ReadHazard(c);
+        if (state.Label == null) return;
+
+        var go = c.gameObject;
+
+        // A lit interactive fire station (campfire, fire barrel) spawns a fire AreaOfEffect that burns
+        // the player, so it scans as a danger and would get a red ring. But it is an interactable the
+        // player uses on purpose, not a hazard to avoid, so skip the danger there. The map's standalone
+        // fire spots (FireSpotSmall-Loop) do not sit under a fire-station name, so they still light.
+        if (c.TryCast<AreaOfEffect>() != null && IsUnderFireStation(go))
+        {
+            if (Verbose.Value) Log.LogDebug($"[danger] skip fire AOE under fire station '{go.name}'.");
+            return;
+        }
+
+        if (!Registry.TryGetValue(c.Pointer, out var t))
+        {
+            // Keep the component's own object as the root (no ancestor climb) for a trap tile and for an
+            // explosive prop. A trap tile places its device mesh (the biomass) under its own object. An
+            // explosive prop's TriggerExplosion sits on the barrel/tank body itself ("FuelTank-View"),
+            // so its own object is exactly the mesh to outline; climbing would pull in the stand and the
+            // bollards beside it. Other hazards (a mounted gun on its stand) still climb via FindHazardRoot.
+            bool keepOwnRoot = c.TryCast<MapTile>() != null || c.TryCast<TriggerExplosion>() != null;
+            var root = keepOwnRoot ? go : FindHazardRoot(go);
+            t = new Tracked
+            {
+                Kind = Kind.Danger,
+                GameObject = go,
+                Hazard = c,
+                HazardLabel = state.Label,
+                AreaOnly = c.TryCast<AreaOfEffect>() != null,
+                HazardRadius = state.Radius,
+                HazardEffect = state.Effect,
+                RootName = root.name,
+                Anchor = root.transform,
+            };
+            Registry[c.Pointer] = t;
+            if (Verbose.Value)
+            {
+                Log.LogDebug($"[danger] {Now()} {c.GetIl2CppType().Name} '{go.name}' label={state.Label} effect={state.Effect ?? "-"} radius={state.Radius:F2} duration={state.Duration:F2} active={state.Active} singleFrame={state.SingleFrame} hitsPlayer={state.HitsPlayer} mask=0x{state.Mask:X} live={state.Live} root='{root.name}' comps=[{ComponentNames(go)}].");
+            }
+            return;
+        }
+
+        bool changed = t.HazardEffect != state.Effect || Math.Abs(t.HazardRadius - state.Radius) > 0.01f;
+        if (changed)
+        {
+            if (Verbose.Value) Log.LogDebug($"[danger] '{go.name}' changed: {t.HazardLabel}/{t.HazardRadius:F2} -> {state.Label}/{state.Radius:F2}; re-attaching.");
+            ResetHazard(t);
+            t.HazardLabel = state.Label;
+            t.HazardRadius = state.Radius;
+            t.HazardEffect = state.Effect;
+        }
+    }
+
+    // Drop a hazard's outlines and ring so the next attach starts fresh.
+    private static void ResetHazard(Tracked t)
+    {
+        SetGlow(t, false);
+        t.Outlines = null;
+        t.AttachTried = false;
+        if (t.Ring != null)
+        {
+            try { UnityEngine.Object.Destroy(t.Ring); } catch { }
+            t.Ring = null;
+        }
+    }
+
+    // The plain state of a hazard, read from the component. Label is null when the component is not
+    // a hazard kind this mod knows (never, for the scanned types) so the caller skips it.
+    private struct HazardState
+    {
+        public string Label;
+        public string Effect;
+        public float Radius;
+        public float Duration;
+        public bool Active;
+        public bool SingleFrame;
+        public bool HitsPlayer;
+        public int Mask;
+        public bool Live;
+    }
+
+    // True when the object or one of its near ancestors is a deco gas field. The GasVolume component
+    // sits on a "GasVolumeProto" child, and the "deco-hazard-gas-field" marker is on the root above it,
+    // so check a few levels up, not just the component's own object.
+    private static bool NameOrAncestorMarksInertGas(GameObject go)
+    {
+        try
+        {
+            var tr = go.transform;
+            for (int i = 0; i < 4 && tr != null; i++)
+            {
+                if (OutlineFilters.IsInertGasField(tr.gameObject.name)) return true;
+                tr = tr.parent;
+            }
+        }
+        catch { }
+        return false;
+    }
+
+    private static HazardState ReadHazard(Component c)
+    {
+        var s = new HazardState { Active = true, HitsPlayer = true, Mask = -1 };
+        if (c.gameObject == null || !c.gameObject.activeInHierarchy) s.Active = false;
+
+        var aoe = c.TryCast<AreaOfEffect>();
+        if (aoe != null)
+        {
+            s.Effect = AreaEffectName(aoe);
+            s.Label = DangerRules.EffectLabel(s.Effect);
+            try { s.Radius = aoe.Radius; } catch { }
+            try { s.Duration = aoe.m_Duration; } catch { }
+            try { s.SingleFrame = aoe.m_SingleFrame; } catch { }
+            try { s.Active = s.Active && aoe.IsActive; } catch { }
+            try { s.Mask = aoe.m_LayerMask.value; } catch { }
+            s.HitsPlayer = MaskHitsPlayer(s.Mask);
+            s.Live = DangerRules.ShouldLightArea(s.Active, s.SingleFrame, s.Duration, s.HitsPlayer);
+            return s;
+        }
+        var gas = c.TryCast<GasVolume>();
+        if (gas != null)
+        {
+            // A burster's explosion prefab carries its own GasVolume (the cloud that can ignite),
+            // which would double up the acid area on the same root. Only a standing tank or a placed
+            // gas mine counts.
+            try { if (gas.GetComponentInParent<Explosion>() != null) return s; } catch { }
+            // A deco gas field is armed in data but never detonates in normal play (see
+            // OutlineFilters.IsInertGasField). Skip it so it does not draw a red ring on decoration.
+            // The marker sits on the object's root, not the GasVolume child, so check the parent chain.
+            if (NameOrAncestorMarksInertGas(c.gameObject)) return s;
+            s.Label = "gas";
+            // A GasVolume is a proximity gas mine (mTriggerActivation on player OnTriggerEnter, then
+            // m_DelayTrigger, then m_ExplosionTrigger spawns m_Explosion). Its trigger collider is the
+            // "too close" zone, so draw the ring at that footprint, not a token dot. It has no mesh
+            // (gas-cloud particles only), so the ring is the only marker.
+            s.Radius = GasTriggerRadius(gas);
+            bool exploded = false;
+            try { exploded = gas.m_Exploded; } catch { }
+            s.Live = s.Active && DangerRules.ShouldLightGas(exploded);
+            return s;
+        }
+        var wire = c.TryCast<Tripwire>();
+        if (wire != null)
+        {
+            s.Label = "tripwire";
+            bool tripped = false;
+            try { tripped = wire.mTripped; } catch { }
+            s.Live = s.Active && DangerRules.ShouldLightTrap(tripped);
+            return s;
+        }
+        if (c.TryCast<GunWeaponTrap>() != null)
+        {
+            s.Label = "gun-trap";
+            // The M60 turret is a HercTurretActor (a CharacterActor). A shot-out turret keeps its
+            // GameObject as a wreck, so activeInHierarchy stays true; read the actor's IsDead so a
+            // dead turret goes dark.
+            bool dead = false;
+            bool found = false;
+            try
+            {
+                var actor = c.gameObject.GetComponentInParent<Game.Actors.CharacterActor>();
+                if (actor != null) { found = true; dead = actor.IsDead; }
+            }
+            catch { }
+            if (Verbose.Value) Log.LogDebug($"[danger] gun-trap '{c.gameObject.name}' actor={found} dead={dead}.");
+            s.Live = s.Active && !dead;
+            return s;
+        }
+        if (c.TryCast<NoiseTrap>() != null)
+        {
+            s.Label = "noise-trap";
+            s.Live = s.Active;
+            return s;
+        }
+        var mine = c.TryCast<BoxMine>();
+        if (mine != null)
+        {
+            s.Label = "mine";
+            bool thrown = false;
+            try { thrown = mine.m_Thrown; } catch { }
+            s.Radius = MineBlastRadius(mine);
+            // Only a placed mine is a hazard; the one still in the survivor's hand is not.
+            s.Live = s.Active && thrown;
+            return s;
+        }
+        var boom = c.TryCast<TriggerExplosion>();
+        if (boom != null)
+        {
+            // A shootable explosive prop: a red barrel, a propane bottle, or the big fuel tank
+            // ("FuelTank-Explosives"). Marked by a TriggerExplosion (spawns the blast) plus a
+            // DamageReceiver (you shoot it to set it off). The DamageReceiver requirement drops a trap's
+            // TriggerExplosion (proximity-triggered, no DamageReceiver) and a thrown grenade. A BoxMine
+            // and a placed trap tile carry a TriggerExplosion too but are already tracked by their own
+            // scans, so skip those. An object with a trigger the mod does not mark (a fire extinguisher,
+            // which only rockets off and deals no damage; a barricade section, which is cover) is skipped
+            // by name.
+            var bgo = c.gameObject;
+            if (bgo == null) return s;
+            // A thrown BoxMine carries a TriggerExplosion too and is tracked by its own scan, so skip it
+            // here. (A MapTile guard cannot be used: the whole map is built from MapTiles, so every prop
+            // sits under one. The DamageReceiver test below is what drops a proximity trap's trigger.)
+            bool alreadyTracked = false;
+            try { alreadyTracked = bgo.GetComponentInParent<BoxMine>() != null; } catch { }
+            if (alreadyTracked) return s;
+            if (NameOrAncestorMarksExcludedExplosive(bgo)) return s;
+            var dr = FindDamageReceiver(bgo);
+            if (dr == null)
+            {
+                if (Verbose.Value)
+                {
+                    try { if (LoggedExplosiveSkip.Add(c.Pointer)) Log.LogDebug($"[danger] skip TriggerExplosion '{bgo.name}' (no DamageReceiver) chain={AncestorChain(bgo)} comps=[{ComponentNames(bgo)}]."); }
+                    catch { }
+                }
+                return s;
+            }
+            s.Label = "explosive";
+            // No DestructibleObject on the fuel tank; it deactivates when it blows, so activeInHierarchy
+            // is the live gate. When a barrel does carry a DestructibleObject, drop it once destroyed too.
+            bool destroyed = false;
+            var destr = FindDestructible(bgo);
+            if (destr != null) { try { destroyed = destr.Destroyed; } catch { } }
+            s.Live = s.Active && !destroyed;
+            return s;
+        }
+        var tile = c.TryCast<MapTile>();
+        if (tile != null)
+        {
+            // Only a hazard trap tile (trap-infection-ground and kin) gets a label; every other map
+            // tile returns a null label and is skipped by the caller.
+            string label = null;
+            try { label = DangerRules.TrapTileLabel(c.gameObject.name); } catch { }
+            if (label == null) return s;
+            s.Label = label;
+            s.Radius = DangerRules.TrapTileRingRadius;
+            // A placed trap is a standing danger while it exists (it re-arms after firing), so light it
+            // whenever it is active, not gated on a detonation flag.
+            s.Live = s.Active;
+            return s;
+        }
+        return s;
+    }
+
+    // Re-read a tracked hazard's live state on a focus press or rescan.
+    private static bool IsHazardLive(Tracked t)
+    {
+        if (t.Hazard == null) return false;
+        try { return ReadHazard(t.Hazard).Live; }
+        catch { return false; }
+    }
+
+    // The footprint radius of a gas mine's trigger collider (its proximity zone), in metres, floored so
+    // a small collider still frames the device and capped so a large one does not fill the screen.
+    // Falls back to the mine ring radius when no collider can be read.
+    private static float GasTriggerRadius(GasVolume gas)
+    {
+        float r = 0f;
+        try
+        {
+            var box = gas.GetComponent<BoxCollider>();
+            if (box != null)
+            {
+                var scale = gas.transform.lossyScale;
+                float hx = box.size.x * 0.5f * Mathf.Abs(scale.x);
+                float hz = box.size.z * 0.5f * Mathf.Abs(scale.z);
+                r = Mathf.Max(hx, hz);
+            }
+        }
+        catch { }
+        if (r <= 0f) return DangerRules.MineRingFallbackRadius;
+        return Mathf.Min(Mathf.Max(r, RingMinRadius.Value), GasRingMaxRadius);
+    }
+
+    // The name of the status effect an area applies, resolved by reference against the game's own
+    // StatusEffects table ("Acid", "Infection", "Burning", "BurningSmall"); a damage-only area reads
+    // "RadialDamage"; an unknown model falls back to its asset name so the log can name it.
+    private static string AreaEffectName(AreaOfEffect aoe)
+    {
+        StatusEffectHandler h = null;
+        try
+        {
+            h = aoe.GetComponent<StatusEffectHandler>();
+            if (h == null) h = aoe.GetComponentInParent<StatusEffectHandler>();
+            if (h == null) h = aoe.GetComponentInChildren<StatusEffectHandler>(true);
+        }
+        catch { }
+        if (h == null)
+        {
+            bool radial = false;
+            try { radial = aoe.GetComponent<RadialDamageHandler>() != null || aoe.GetComponentInParent<RadialDamageHandler>() != null; } catch { }
+            return radial ? "RadialDamage" : null;
+        }
+
+        StatusEffectModel model = null;
+        try { model = h.m_StatusEffect; } catch { }
+        if (model == null) return null;
+
+        try
+        {
+            if (Same(model, StatusEffects.Acid)) return "Acid";
+            if (Same(model, StatusEffects.Infection)) return "Infection";
+            if (Same(model, StatusEffects.Burning)) return "Burning";
+            if (Same(model, StatusEffects.BurningSmall)) return "BurningSmall";
+        }
+        catch (Exception e)
+        {
+            if (Verbose.Value) Log.LogDebug($"[danger] StatusEffects table read failed: {e.Message}");
+        }
+        try { return model.name; } catch { return "?"; }
+    }
+
+    private static bool Same(StatusEffectModel a, StatusEffectModel b) => a != null && b != null && a.Pointer == b.Pointer;
+
+    // Whether a layer mask includes the player's layer. With no player captured yet, assume it does.
+    private static bool MaskHitsPlayer(int mask)
+    {
+        if (Player == null) return true;
+        int layer;
+        try { layer = Player.gameObject.layer; } catch { return true; }
+        return ((mask >> layer) & 1) != 0;
+    }
+
+    // TriggerExplosion pointers already logged as skipped (no DestructibleObject), so each logs once.
+    private static readonly HashSet<IntPtr> LoggedExplosiveSkip = new HashSet<IntPtr>();
+
+    // A DamageReceiver marks an explosive prop as a shootable thing (the barrel, the fuel tank), which
+    // is what tells it from a proximity trap's trigger. Checked on the trigger's own object, then its
+    // parents; not its children, so a far receiver under a shared parent is not mistaken for this prop's.
+    private static DamageReceiver FindDamageReceiver(GameObject go)
+    {
+        try
+        {
+            var d = go.GetComponent<DamageReceiver>();
+            if (d == null) d = go.GetComponentInParent<DamageReceiver>();
+            return d;
+        }
+        catch { return null; }
+    }
+
+    // The DestructibleObject on a barrel that carries one, so its Destroyed flag can drop the glow. The
+    // big fuel tank has none (it deactivates instead), so this is optional; null is fine.
+    private static DestructibleObject FindDestructible(GameObject go)
+    {
+        try
+        {
+            var d = go.GetComponent<DestructibleObject>();
+            if (d == null) d = go.GetComponentInParent<DestructibleObject>();
+            if (d == null) d = go.GetComponentInChildren<DestructibleObject>(true);
+            return d;
+        }
+        catch { return null; }
+    }
+
+    // True when an object with an explosive trigger is one the mod does not mark: a fire extinguisher
+    // (explosive in the data but harmless - it only rockets off on the applied force, a
+    // TriggerGasTankForce, and deals no damage) or a barricade section (destructible cover). The marker
+    // sits on the prop root, so check the chain.
+    private static bool NameOrAncestorMarksExcludedExplosive(GameObject go)
+    {
+        try
+        {
+            var tr = go.transform;
+            for (int i = 0; i < 4 && tr != null; i++)
+            {
+                if (OutlineFilters.IsExcludedExplosive(tr.gameObject.name)) return true;
+                tr = tr.parent;
+            }
+        }
+        catch { }
+        return false;
+    }
+
+    // The blast radius of a placed mine: the Explosion under its prefab, else the fallback constant.
+    private static float MineBlastRadius(BoxMine mine)
+    {
+        try
+        {
+            var ex = mine.GetComponentInChildren<Explosion>(true);
+            if (ex != null)
+            {
+                float r = ex.GetRadius();
+                if (r > 0f) return r;
+            }
+        }
+        catch (Exception e)
+        {
+            if (Verbose.Value) Log.LogDebug($"[danger] mine radius read failed: {e.Message}");
+        }
+        return DangerRules.MineRingFallbackRadius;
+    }
+
+    // The object to gather a hazard's meshes from: the component's own object when it has any, else
+    // the same ancestor walk the interactables use (a puddle's effect meshes may sit on the explosion
+    // parent). FindRenderRoot's first branch needs an Interactable, which a hazard does not have.
+    private static GameObject FindHazardRoot(GameObject go)
+    {
+        try
+        {
+            int c = go.GetComponentsInChildren<Renderer>(true).Length;
+            if (Verbose.Value) Log.LogDebug($"[danger] root chain for '{go.name}': {AncestorChain(go)}.");
+            if (c > 0)
+            {
+                // A trap's component sits on its moving part (the M60 on its mount: the gun node
+                // holds only the barrel mesh, the stand sits several nodes up). Climb to the highest
+                // ancestor that is still one prop assembly (renderer count within the cap), so the
+                // whole turret and its stand light. Stop before a scene-grouping node over the cap.
+                var best = go;
+                var up = go.transform.parent;
+                for (int depth = 0; up != null && depth < 5; depth++, up = up.parent)
+                {
+                    int pc = up.gameObject.GetComponentsInChildren<Renderer>(true).Length;
+                    if (pc > MaxPropAssemblyRenderers) break;
+                    best = up.gameObject;
+                }
+                return best;
+            }
+        }
+        catch { }
+        return FindRenderRoot(go);
+    }
+
+    // The most renderers a parent may hold to count as one prop assembly (a mounted gun and its
+    // stand) rather than a scene grouping node.
+    private const int MaxPropAssemblyRenderers = 12;
+
+    // The parent chain of an object with each node's renderer count, for the verbose log.
+    // True when the object sits under an interactive fire station (a campfire or fire barrel), by name.
+    // Used to skip the danger ring on a fire the player lights and uses, not a hazard to avoid.
+    private static bool IsUnderFireStation(GameObject go)
+    {
+        var t = go.transform;
+        for (int depth = 0; t != null && depth < 6; depth++, t = t.parent)
+        {
+            if (OutlineFilters.NameMarksFire(t.name)) return true;
+        }
+        return false;
+    }
+
+    // True when the subtree holds a real mesh renderer (not a particle/trail/sprite renderer), so the
+    // outline pipeline would have something to draw.
+    private static bool HasMeshRenderer(GameObject go)
+    {
+        try
+        {
+            var rs = go.GetComponentsInChildren<Renderer>(true);
+            for (int i = 0; i < rs.Length; i++)
+            {
+                var r = rs[i];
+                if (r == null) continue;
+                if (r.TryCast<MeshRenderer>() != null || r.TryCast<SkinnedMeshRenderer>() != null) return true;
+            }
+        }
+        catch { }
+        return false;
+    }
+
+    // The nearest fire-named ancestor that holds a real mesh, so an open campfire whose render root is
+    // fire particles only ("InteractiveFire") lights its structure mesh on the parent
+    // ("deco-fire-interactable-campfire") instead of a ground disc. Null when none is found.
+    private static GameObject FindFireMeshRoot(GameObject from)
+    {
+        try
+        {
+            var tr = from.transform.parent;
+            for (int i = 0; i < 4 && tr != null; i++, tr = tr.parent)
+            {
+                var pgo = tr.gameObject;
+                if (OutlineFilters.NameMarksFire(pgo.name) && HasMeshRenderer(pgo)) return pgo;
+            }
+        }
+        catch { }
+        return null;
+    }
+
+    // Diagnostic: for a fire station with no mesh of its own (an unlit open campfire), dump the render
+    // root's parent chain and, for each parent, its immediate children with per-child renderer counts and
+    // the first mesh name found. This locates the campfire's structure mesh (the stones/pit) when it is a
+    // sibling of the fire-particle node, so it can be outlined instead of the ground disc. Verbose only.
+    private static void LogFireStationNeighbours(GameObject root)
+    {
+        try
+        {
+            var tr = root.transform;
+            for (int depth = 0; tr != null && depth < 3; depth++, tr = tr.parent)
+            {
+                var pgo = tr.gameObject;
+                var kids = new List<string>();
+                for (int i = 0; i < tr.childCount && kids.Count < 16; i++)
+                {
+                    var ch = tr.GetChild(i).gameObject;
+                    int rc = 0; string firstMesh = "-";
+                    try
+                    {
+                        var rs = ch.GetComponentsInChildren<Renderer>(true);
+                        rc = rs.Length;
+                        for (int j = 0; j < rs.Length; j++)
+                        {
+                            var r = rs[j];
+                            if (r == null) continue;
+                            if (r.TryCast<MeshRenderer>() != null || r.TryCast<SkinnedMeshRenderer>() != null) { firstMesh = r.gameObject.name; break; }
+                        }
+                    }
+                    catch { }
+                    kids.Add($"{ch.name}(r={rc},mesh={firstMesh})");
+                }
+                Log.LogDebug($"[fire-neighbours] '{pgo.name}' depth={depth} children=[{string.Join(", ", kids)}].");
+            }
+        }
+        catch (Exception e) { Log.LogDebug($"[fire-neighbours] dump failed: {e.Message}"); }
+    }
+
+    private static string AncestorChain(GameObject go)
+    {
+        var parts = new List<string>();
+        var t = go.transform;
+        for (int depth = 0; t != null && depth < 5; depth++, t = t.parent)
+        {
+            int n = 0; try { n = t.gameObject.GetComponentsInChildren<Renderer>(true).Length; } catch { }
+            parts.Add($"'{t.name}'({n})");
+        }
+        return string.Join(" < ", parts);
+    }
+
+    // Build a ring for a hazard: a flat band mesh at the given radius on a child object, laid on the
+    // ground under the hazard, outlined through the game's own OutlineRenderer in the danger
+    // category. The MeshRenderer itself must not show: it gets a fully transparent material when a
+    // transparent shader is available (so it still counts as visible to culling and the outline
+    // system), else it stays disabled and the log records whether the outline will still render.
+    private static void AttachRing(Tracked t, GameObject root, float radius, OutlineCategory category)
+    {
+        if (t.Ring != null) return;
+        if (radius <= 0f) radius = DangerRules.MineRingFallbackRadius;
+        try
+        {
+            var ring = new GameObject("DangerRing");
+            ring.transform.SetParent(root.transform, true);
+            ring.transform.position = GroundUnder(root.transform.position) + new Vector3(0f, 0.05f, 0f);
+            ring.transform.rotation = Quaternion.identity;
+            ring.layer = root.layer;
+
+            // A solid filled disc flat on the ground: a fan from a centre vertex to the rim, single-
+            // winding facing up (+Y). A double-wound flat mesh has two coplanar sides that z-fight, which
+            // the outline drew as a pinwheel of different-shaded triangles; one upward side renders as a
+            // solid, single-colour disc.
+            int seg = DangerRules.RingSegments;
+            var rim = DangerRules.RingPoints(radius, seg);
+            var verts = new Vector3[seg + 1];
+            verts[0] = Vector3.zero;
+            for (int i = 0; i < seg; i++) verts[i + 1] = new Vector3(rim[i].x, 0f, rim[i].z);
+            var tris = new int[seg * 3];
+            for (int i = 0; i < seg; i++)
+            {
+                int a = 1 + i;
+                int b = 1 + (i + 1) % seg;
+                int ti = i * 3;
+                tris[ti] = 0; tris[ti + 1] = b; tris[ti + 2] = a;
+            }
+            var mesh = new Mesh();
+            mesh.vertices = verts;
+            mesh.triangles = tris;
+            mesh.RecalculateNormals();
+            mesh.RecalculateBounds();
+
+            var mf = ring.AddComponent<MeshFilter>();
+            mf.mesh = mesh;
+            var mr = ring.AddComponent<MeshRenderer>();
+            mr.shadowCastingMode = UnityEngine.Rendering.ShadowCastingMode.Off;
+            mr.receiveShadows = false;
+            string draw = "disabled";
+            var shader = FindTransparentShader();
+            if (shader != null)
+            {
+                var mat = new Material(shader);
+                mat.color = new Color(0f, 0f, 0f, 0f);
+                mr.material = mat;
+                mr.enabled = true;
+                draw = "transparent:" + shader.name;
+            }
+            else
+            {
+                mr.enabled = false;
+            }
+
+            var or = ring.AddComponent<OutlineRenderer>();
+            or.Category = category;
+            or.m_Renderer = mr;
+            or.m_MeshFilter = mf;
+            or.m_AllowRender = true;
+            ModSetState(or, OutlineState.Inactive);
+            try { or.UpdateRenderFunction(); } catch { }
+            t.Outlines.Add(or);
+            t.Ring = ring;
+            if (Verbose.Value)
+            {
+                bool will = false; try { will = or.WillRender; } catch { }
+                var p = ring.transform.position;
+                Log.LogDebug($"[danger] ring for '{root.name}' radius={radius:F2} at ({p.x:F1}/{p.y:F1}/{p.z:F1}) draw={draw} willRender={will} ({verts.Length} verts).");
+            }
+        }
+        catch (Exception e)
+        {
+            Log.LogWarning($"[danger] ring build failed on '{root.name}': {e.Message}");
+        }
+    }
+
+    // A shader that can draw fully transparent, so the ring's own renderer shows nothing while it
+    // stays a live renderer. IL2CPP builds strip unused shaders, so each name is tried and the
+    // result cached; null when none survived.
+    private static Shader _transparentShader;
+    private static bool _transparentShaderSearched;
+    private static readonly string[] TransparentShaderNames = { "Sprites/Default", "Unlit/Transparent", "Legacy Shaders/Transparent/Diffuse", "UI/Default" };
+
+    private static Shader FindTransparentShader()
+    {
+        if (_transparentShaderSearched) return _transparentShader;
+        _transparentShaderSearched = true;
+        for (int i = 0; i < TransparentShaderNames.Length; i++)
+        {
+            try
+            {
+                var s = Shader.Find(TransparentShaderNames[i]);
+                if (s != null) { _transparentShader = s; break; }
+            }
+            catch { }
+        }
+        if (Verbose.Value) Log.LogDebug($"[danger] transparent shader: {(_transparentShader != null ? _transparentShader.name : "none found")}.");
+        return _transparentShader;
+    }
+
+    // The ground point under a hazard, so a ring lies on the floor instead of at the hazard's own
+    // pivot (a fire spot's pivot sits well above the ground). Falls back to the pivot itself.
+    private static Vector3 GroundUnder(Vector3 p)
+    {
+        try
+        {
+            if (Physics.Raycast(p + Vector3.up * 0.5f, Vector3.down, out var hit, 5f, -1, QueryTriggerInteraction.Ignore))
+                return hit.point;
+        }
+        catch { }
+        return p;
+    }
 }
 
 // --- Container registration --------------------------------------------------------------------
@@ -1002,12 +2096,29 @@ public static class LootAwakePatch
     [HarmonyPostfix]
     public static void Postfix(LootContainer __instance)
     {
-        var t = new Plugin.Tracked { Kind = Plugin.Kind.Loot, Loot = __instance, GameObject = __instance.gameObject };
+        var go = __instance.gameObject;
+
+        // A disarmable trap (the placed proximity/tripwire mine) carries a LootContainer and a
+        // TrapDisarm on the same object, so it registers here and would light as neutral loot. It is a
+        // hazard first, so track it as Danger (red) instead: its wire and posts then outline in the
+        // danger color. The Interactable.Awake classifier cannot catch it - it bails on any object that
+        // has a LootContainer - so the reclassification lives here. Once the mine detonates it disables
+        // its collider, and the undetectable-collider gate in ShouldHighlight darkens it.
+        if (go.GetComponent<TrapDisarm>() != null)
+        {
+            Plugin.Registry[__instance.Pointer] = new Plugin.Tracked { Kind = Plugin.Kind.Danger, GameObject = go, HazardLabel = "trap" };
+            if (Plugin.Verbose.Value)
+                Plugin.Log.LogDebug($"[reg] trap LootContainer '{go.name}' -> Danger (TrapDisarm present).");
+            if (Plugin.FocusActive) Plugin.HighlightAll(true);
+            return;
+        }
+
+        var t = new Plugin.Tracked { Kind = Plugin.Kind.Loot, Loot = __instance, GameObject = go };
         Plugin.Registry[__instance.Pointer] = t;
         if (Plugin.Verbose.Value)
         {
             var p = __instance.transform.position;
-            Plugin.Log.LogDebug($"[reg] LootContainer '{__instance.gameObject.name}' at ({p.x:F1},{p.y:F1},{p.z:F1}) searched={__instance.IsSearched} depleted={__instance.IsDepleted}.");
+            Plugin.Log.LogDebug($"[reg] LootContainer '{go.name}' at ({p.x:F1},{p.y:F1},{p.z:F1}) searched={__instance.IsSearched} depleted={__instance.IsDepleted}.");
         }
         if (Plugin.FocusActive) Plugin.HighlightAll(true);
     }
@@ -1076,6 +2187,8 @@ public static class InteractableAwakePatch
         // ShouldHighlight). Absent for other gated kinds.
         if (kind == Plugin.Kind.Gated)
             t.Refill = go.GetComponent<AntiViralRefillInteraction>();
+        if (kind == Plugin.Kind.Danger)
+            t.HazardLabel = "trap-disarm";
         Plugin.Registry[__instance.Pointer] = t;
         if (Plugin.Verbose.Value)
         {
@@ -1103,10 +2216,8 @@ public static class InteractableAwakePatch
             layers.Add(Plugin.Kind.Gated);
         if (go.GetComponent<ToolRequirementInteraction>() != null)
             layers.Add(Plugin.Kind.ToolGated);
-        // A carryable fuel can (CarryInteraction) is its own kind, outlined red to match the game's
-        // own red x-ray highlight on the explosive can. Checked before Pickup so a can routes to the
-        // Fuel (red) category, not the shared Pickup color. This assumes CarryInteraction marks the
-        // fuel can; if another carryable prop shares the component, it would also outline red.
+        // CarryInteraction covers fuel cans and supply bags. Both use CarryableColor and the
+        // existing IncludeFuel toggle. Checked before Pickup to keep the carryable category first.
         if (go.GetComponent<CarryInteraction>() != null)
             layers.Add(Plugin.Kind.Fuel);
         if (go.GetComponent<PickupItem>() != null
@@ -1123,6 +2234,10 @@ public static class InteractableAwakePatch
             || go.GetComponent<BookInteraction>() != null
             || go.GetComponent<AwardXpInteraction>() != null)
             layers.Add(Plugin.Kind.Objective);
+        // The disarm prompt on a trap. The trap itself (tripwire, gun, noise box) is found by the
+        // hazard scan; this is the interactable the player uses to disarm it.
+        if (go.GetComponent<TrapDisarm>() != null)
+            layers.Add(Plugin.Kind.Danger);
         // An unlit campfire has no interaction handler component (its "light" action is a UnityEvent),
         // so no component above matches it. Classify it by the fire-barrel prop it drives. Once lit it
         // gains a CraftingInteraction and is a Station on its own; matching the prop keeps it a Station
@@ -1143,6 +2258,15 @@ public static class InteractableAwakePatch
             var it = go.GetComponent<Interactable>();
             var root = it != null ? it.ObjectRoot : null;
             if (root != null && OutlineFilters.NameMarksFire(root.name)) return true;
+        }
+        catch { }
+        // The interactable node and its ObjectRoot can both be unnamed (an open campfire's node is
+        // "Interactable-Light" and its ObjectRoot holds no mesh), so the fire prop shows only at the
+        // render root the outline climbs to ("InteractiveFire"). Match the fire name there too.
+        try
+        {
+            var rr = Plugin.FindRenderRoot(go);
+            if (rr != null && OutlineFilters.NameMarksFire(rr.name)) return true;
         }
         catch { }
         return false;
@@ -1188,7 +2312,33 @@ public static class FocusStartPatch
         if (Plugin.Verbose.Value) Plugin.Log.LogDebug($"[focus] {Plugin.Now()} StartFocus fired (IsFocusActive={__instance.IsFocusActive}).");
         try { Plugin.Player = __instance.Actor; } catch { Plugin.Player = null; }
         Plugin.CaptureSensor(__instance);
+        Plugin.CaptureColorizor();
         Plugin.HighlightAll(true);
+    }
+}
+
+// The game's aim-outline system deactivates a shared aim target's outline (the M60 turret) by
+// calling OutlineRenderer.SetState(Inactive), and it runs after the mod's LateUpdate, so re-forcing
+// the state in LateUpdate loses the timing race. This prefix intercepts the setter itself: while
+// focus is on, an external attempt to deactivate a danger hazard's outline is rewritten to Active
+// (and m_AllowRender restored), so the danger outline stays lit. The mod's own state changes pass
+// through untouched (ModDrivingOutline is set around them), so a hazard can still go dark when it
+// expires or is destroyed. SetState's parameters are a blittable enum and bool, so the patch is safe.
+[HarmonyPatch(typeof(OutlineRenderer), nameof(OutlineRenderer.SetState))]
+public static class OutlineSetStatePatch
+{
+    [HarmonyPrefix]
+    public static void Prefix(OutlineRenderer __instance, ref OutlineState value)
+    {
+        try
+        {
+            if (Plugin.ModDrivingOutline || !Plugin.FocusActive || value == OutlineState.Active) return;
+            if (!Plugin.DangerOutlinePtrs.Contains(__instance.Pointer)) return;
+            // Rewrite the external deactivation to Active. SetState's own body then recomputes the
+            // WillRender gate (m_AllowRender) from the active category state, so nothing else is needed.
+            value = OutlineState.Active;
+        }
+        catch { }
     }
 }
 
@@ -1211,7 +2361,12 @@ public class Ticker : MonoBehaviour
 {
     public Ticker(IntPtr ptr) : base(ptr) { }
 
-    public void LateUpdate() => Plugin.DrainAttachQueue();
+    public void LateUpdate()
+    {
+        Plugin.DrainAttachQueue();
+        Plugin.TickHazards();
+        Plugin.ApplyFocusSaturation();
+    }
 
     public void OnGUI()
     {

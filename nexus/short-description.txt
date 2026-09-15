@@ -1,1 +1,1 @@
-Outlines searchable containers and other loot while you are in focus mode.
+Outlines loot, carryable supplies, and nearby hazards through walls in focus mode.
